@@ -64,9 +64,22 @@ per engine (news/video/image/local/rich-schema/POI/research digests on Brave;
 answers, agents, monitors, WebSets, exporters on Exa), all documented with
 live-verified request/response notes in `references/`.
 
-## Note on console scripts
+## Provenance
 
-Each `pyproject.toml` declares a `[project.scripts]` entry pointing at a
-shared `rlm.skill:cli` launcher that is **not** part of this repo. Installing
-the packages works and the modules import fine; only the bare `exa` / `brave`
-shell commands are unavailable. Import the modules instead.
+These skills were developed iteratively inside the Prime Agent
+harness, at the direction of and for the use of the author — the `references/round*.md`
+files are the round-by-round development notes, each round live-verified against
+the real Exa / Brave Search APIs. They are shared here as the author's own work
+product: everything in this tree is client code and behavior notes derived from
+the public API surfaces of Exa and Brave, with no vendor-proprietary code.
+
+The `[project.scripts]` entries reference `rlm.skill:cli`, a launcher belonging
+to the Prime harness runtime. That runtime is **not** part of this repo and is
+not needed: installing the packages works and the modules import fine — only
+the bare `exa` / `brave` shell commands are unavailable. Import the modules
+instead.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 karolus.
+
