@@ -1,85 +1,67 @@
 # search-skills
 
-Agent-friendly Python clients for two independent web-search APIs: **Exa**
-(neural/semantic search, answers, WebSets) and **Brave Search** (web/news/image/
-video/local, rich structured results). Built as agent skills — every function
-returns readable Markdown or tidy dicts, so an LLM agent can call them directly.
+Reusable agent skills and Python clients for Exa and Brave Search. Each skill
+starts with task selection and evidence handling; focused references cover
+advanced operations. The clients can be used independently or as complementary
+search paths.
 
-They are designed to be used together as two independent discovery paths, with
-load-bearing claims verified against the returned primary sources.
+## Install and use
 
-## Layout
+Python 3.10+ and `uv`:
 
-```
-exa/                      # Exa Search skill (v0.20.0)
-  SKILL.md                # full agent-facing capability doc
-  pyproject.toml
-  src/exa/__init__.py     # the whole client (httpx only)
-  references/             # per-round dev notes: usage, websets, API details
-brave/                    # Brave Search skill (v0.20.0)
-  SKILL.md                # full agent-facing capability doc
-  pyproject.toml
-  src/brave/__init__.py   # the whole client (httpx only)
-  references/             # per-round dev notes: api.md + round-by-round findings
+```bash
+uv venv
+uv pip install --python .venv/bin/python -e ./exa -e ./brave
 ```
 
-## Install
-
-Python ≥ 3.10, single dependency (`httpx`).
-
-```sh
-uv venv && source .venv/bin/activate
-uv pip install -e ./exa -e ./brave
-# or: pip install -e ./exa -e ./brave
-```
-
-## Keys
-
-Both clients read their key from the environment (with dotenv fallbacks):
-
-- `EXA_API_KEY` — from <https://api.exa.ai>
-- `BRAVE_API_KEY` — from <https://brave.com/search/api/>
-
-## Usage
+Configure `EXA_API_KEY` and `BRAVE_API_KEY` (or `BRAVE_SEARCH_API_KEY`) in your
+environment. The clients also support existing Prime dotenv/key-store fallbacks.
 
 ```python
-import exa, brave
+import exa
+import brave
 
-# Exa: neural search with grounded summaries
-res = exa.search("branch-native databases", num_results=5, with_summary=True)
-for r in res.results:
-    print(r.title, r.url, r.summary)
+papers = exa.search("incremental view maintenance", mode="paper",
+                    num_results=5, with_highlights=True)
+print(papers.to_agent())
 
-# Exa: citation-grounded answer
-print(exa.answer("What is Firecracker's memory-snapshot restore model?"))
-
-# Brave: structured web search
-b = brave.search("firecracker microvm", count=4)
-for tr in b["top_results"]:
-    print(tr["item"]["title"], tr["item"]["url"])
+pages = brave.search('site:docs.python.org "TaskGroup"', count=5)
+for page in pages.get("results") or []:
+    print(page.get("title"), page.get("url"), page.get("snippet"))
 ```
 
-Each package's `SKILL.md` is the authoritative surface map — dozens of modes
-per engine (news/video/image/local/rich-schema/POI/research digests on Brave;
-answers, agents, monitors, WebSets, exporters on Exa), all documented with
-live-verified request/response notes in `references/`.
+Use `exa.run(...)` / `brave.run(...)` for readable text. No external harness or
+CLI launcher is required. The functions accept awaitable results for harness
+compatibility but still perform blocking I/O; use threads for event-loop use.
 
-## Provenance
+To install as agent skills, copy or link each complete skill directory into your
+agent's global skills directory. Keep `src`, `pyproject.toml`, and `references`
+with `SKILL.md`; names alone are not dependencies or installed packages.
 
-These skills were developed iteratively inside the Prime Agent
-harness, at the direction of and for the use of the author — the `references/round*.md`
-files are the round-by-round development notes, each round live-verified against
-the real Exa / Brave Search APIs. They are shared here as the author's own work
-product: everything in this tree is client code and behavior notes derived from
-the public API surfaces of Exa and Brave, with no vendor-proprietary code.
+## Skill guides
 
-The `[project.scripts]` entries reference `rlm.skill:cli`, a launcher belonging
-to the Prime harness runtime. That runtime is **not** part of this repo and is
-not needed: installing the packages works and the modules import fine — only
-the bare `exa` / `brave` shell commands are unavailable. Import the modules
-instead.
+- [Exa](exa/SKILL.md): semantic discovery, content, papers, code, and entities.
+  References cover [search](exa/references/usage.md),
+  [developer research](exa/references/developer.md),
+  [hosted jobs](exa/references/jobs.md), and [Websets](exa/references/websets.md).
+- [Brave](brave/SKILL.md): web, news, media, local, and exact-term discovery.
+  References cover [the client](brave/references/api.md),
+  [developer research](brave/references/developer.md), and
+  [verticals](brave/references/verticals.md).
+
+These are custom clients, not the vendors' official SDKs. Python signatures come
+from the bundled source; current endpoint support and entitlement come from the
+provider. Convenience helpers can make multiple requests and return heuristics
+or generated summaries. Verify substantive claims against original sources.
+
+## Validation
+
+```bash
+uv run --with ./exa --with ./brave python -m unittest discover -s tests
+```
+
+The tests use local fixtures and do not need keys or make paid API calls.
 
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2026 karolus.
-

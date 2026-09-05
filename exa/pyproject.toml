@@ -1,12 +1,9 @@
 [project]
 name = "exa"
 version = "0.20.0"
-description = 'Advanced Exa Search for Agent (api.exa.ai) - modes (code/github/company/financial/people/paper/publication/personal-site/news/lead/websets), hybrid/neural/keyword/instant/fast/deep-lite/deep/deep-reasoning/magic search types, rich structured results (highlights/summary/entities/text), agentic research (exa.agent) with groundings/cost/connects, SSE streaming (stream_answer/stream_search), scheduled monitors (monitor_*/wmonitor_*), agent-run management, WebSets API (webset_*, import_*, webhook_*, event_*, team_info), citation-grounded answers, fetch with markdown/summary, subpage helpers, domains()/total_cost()/cost_breakdown()/to_dataframe()/to_meta(), request-latency + per-mode cost metadata, Answer/AgentRun.to_markdown(), webset_get(expand=items), agent_list/events pagination, webhook_attempts/event_list filters, webset_preview/items helpers + webset_items_all() cursor paging, webset_recall() read-side coverage, similar_to() alias, agent_chat() multi-turn loop, search_to_csv/jsonl + to_xlsx() exporters, citationFormat passthrough, news_roundup()/company_dossier()/diff_results(), agent_trace(), stream_answer_source(), webset_snapshot()/webset_snapshot_diff(), explain(), magic(), entity_search()/entity_schema()/top_terms(). DEVELOPER surfaces (v0.18): github_repo() repo profile (owner/stars/readme), code_search() code/issue/PR hits, hf_models()/hf_discussions() HuggingFace model/community search, dev_help() cited dev answers, find_used_by() packages-imported callers, dev_report() one-call dev-light README. Uses EXA_API_KEY; (environment, dotenv, /login).'
+description = "Exa search, content retrieval, cited research, and Websets Python client."
 requires-python = ">=3.10"
 dependencies = ["httpx>=0.27,<1"]
-
-[project.scripts]
-exa = "rlm.skill:cli"
 
 [build-system]
 requires = ["hatchling"]

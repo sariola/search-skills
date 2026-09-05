@@ -1,94 +1,9 @@
-"""Brave Search API skill for Prime Agent — advanced, agent-friendly.
+"""Brave search client.
 
-Native REST wrapper over the Brave Search API (https://api.search.brave.com)
-using BRAVE_API_KEY / BRAVE_SEARCH_API_KEY.
-
-Advanced / agent-friendly surface:
-  * endpoints as modes: web, news, image, video, local, plus `all` (merged web+news+video)
-  * knows the knowledge graph: surfaces the `infobox` (entity panel), the
-    `videos` + `discussions` sections Brave embeds in web responses, and the
-    `faq` Q&A blurb that Brave attaches to many queries
-  * surfaces Brave's authoritative **`mixed`** ordering (main/top/side) so a
-    pipeline knows the exact blended order of results the way a user sees them,
-    plus a convenient pre-blended `top_results` list
-  * uses query diagnostics (spellcheck, bad_results) so the agent can tell when
-    results are authoritative vs. thin
-  * rich media metadata: video creator/author/duration/thumbnail (+ original
-    direct-source URL), image source/placeholder blur-up, news age + publisher
-  * round-16: `infobox()` typed knowledge-panel fact table, `thumbnails()`
-    flattened thumbnail gallery across video+image, `drinks()` drink recipe
-    filter (news_regions/newsvine/discussion joinCount+reply-depth / video
-    playability+image image_cache documented-absent)
-  * round-12: `summarize_page()` page digest, `mosaic()` cross-corpus digest,
-    image batch up to 200, honest /suggest-absent + 422-offset docs
-  * round-13: `mosaic()` also fuses in `locations` (map/POIs), video `live`
-    flag, image `property`/`search_type` + place `cate` pass-through params,
-    `newsflash()` headlines, `explain()` Markdown brief, trending-absent
-  * round-14: news `breaking`/`is_live`/`is_source_local` flags, `news_breaking()`
-    breaking-news digest, `news_beams()` grouped publisher/beam view, `batch()`
-    parallel queries, `article_review()` consensus good/bad/mixed brief,
-    `search_worker()` BFS crawl over cluster sitelinks, `related()` documented-absent
-  * `cluster`/sitelinks sub-pages on results, infobox `providers` provenance,
-    fixed Q&A `qa` (answer.text + upvote_count), `text_decorations=false` for
-    clean (non-`<strong>`) descriptions, and mixes/news/faq pooled into the
-    blended `mixed`/`top_results` order
-  * `offset` pagination within a window (0..9), `grep` regex
-    filtering, `goggles_id`, freshness, country, language, result_filter,
-    safe_search, spellcheck, extra, and embedded-section size
-    (`discussion_count`, `video_count`, `movie_count`)
-  * round-5: `software()`/`package` registry lookup (name, version, PyPI/npm,
-    code repo, programming language) from software-subtype web results; video
-    `views` count + `author_url` channel link; `might_be_offensive` (video/
-    image) + `family_friendly` (web) safety flags; discussion
-    `is_source_local`/`is_source_both`; distinct `subtype` on web results
-  * round-6: `locations` map / `loc` X-Loc-* hints; full `freshness`;
-    `ui_lang`, `units`, `operators`, `include_fetch_metadata`; modern `goggles`
-  * round-7: `breadcrumb` (meta_url.path) on every result; discussion `data`
-    enrichment (`num_answers`, `score`, `question`, `top_comment`) surfaced via
-    `_discussion_item` + a new `forums()` lookup; `thumbnail_original` and
-    `thumbnail_is_logo` on web results; `creative_work` ratings on select
-    results; inline `location` and `inline_faq` blocks on web items;
-    `author_meta` (name + portrait); query geo-diagnostics (`is_geolocal`,
-    `local_decision`, `local_locations_idx`, `show_strict_warning`); section
-    `mutated_by_goggles` flags; `probe(url)` / `crawl(urls)` page text fetch
-  * round-8: full-context answers — article/publisher identity (`publisher_url`,
-    `publisher_logo`, `publisher_type`) + `paywall` (`isAccessibleForFree`)
-    gating flag; author `types`; `fetched_content_timestamp` on web/news/video/
-    discussion results; FAQ items now carry `title`/`breadcrumb`; locations carry
-    the full weekly schedule (`week`), `price` range, `rating`, `icon`, and the
-    venue `id`/`timezone_offset`/`profiles`/`website`; infobox `position`/`label`;
-    plus dedicated media/POI helpers `headlines()`/`clips()`/`pictures()` and an
-    `open_now(place)` "is it open right now" answer
-  * round-9: rich **schema.org structured data** embedded in web results --
-    `recipe` (title, timings, ingredients, instructions, servings, calories,
-    category/cuisine, ratings), `product` (name, price, offers, rating) and
-    `movie` (release, directors, artists, genre, duration, rating) blocks, plus
-    the file-type `content_type` (`pdf`, ...) on documents; dedicated
-    `recipes()` / `products()` / `movies()` subtype-aware lookups
-    (mirrors of `forums()`/`locations()`) and rich rendering in `run()`
-  * round-10: **Rich Search API** + Local POIs — `rich(query)` and typed
-    helpers (`weather()`, `stock_quote()`, `crypto()`, `definition()`,
-    `currency_x()`, `convert_values()`, `unix_time()`) that send web search
-    with `enable_rich_callback`, surface the `rich` hint, and fetch the
-    `/res/v1/web/rich` payload for live structured answers: weather forecast,
-    stock quotes, crypto prices, FX conversions, calculator, definitions,
-    unit conversion, Unix datetime, sports scores.  Also **Local POIs**:
-    `pois(ids)` and `poi_descriptions(ids)` — the `/local/pois` & 
-    `/local/descriptions` endpoints for the deep business record (reviews,
-    pictures, email, contact, distance, profiles, full-week schedule) behind
-    web-search `locations` ids.  All verified live.
-  * round-19: clean engine — pooled httpx client, one-way `_fanout` (no
-    busy-wait threads), Retry-After, `search(view="agent")` default
-    (~25x smaller JSON), `brief()`, parallel mosaic/batch/crawl/mode=all
-  * round-18 (dev): `pkg_lookup()` package/registry identity + versions,
-    `pkg_security()` package advisory digest (Snyk/cvedetails/GH-advisory/NVD
-    + CVE ids + fresh news), `error_solution()` one-call best-answer for an
-    error/stack string, `stack_trace()` GH issues + SOA threads + articles for
-    a stack snippet, `dep_signal()` classified deprecation/breaking scan
-    (by_type + counts + threshold_days), `trending_libs()` documented-absent
-  * `search()` returns structured JSON for scripting; `run()` renders it readable
+Use search() for structured results and run() for readable output.
+See SKILL.md and its task-specific references for workflows and limitations.
+Awaitable return values provide compatibility, not nonblocking I/O.
 """
-
 from __future__ import annotations
 
 import os
@@ -1926,11 +1841,11 @@ def _search_full(
         extra: Request extra metadata / additional snippets (web).
         goggles_id: (deprecated) legacy Goggles id / URL. Prefer `goggles`.
         spellcheck: Boolean spell check or disable spell-correction.
-        offset: page-start index for the current window. Brave's real window
+        offset: zero-based page number for the current window. Brave's real window
             is offset 0..9 regardless of count (verified live: every count
             accepts offset up to 9; offset >= 10 returns HTTP 422). Keep count
-            fixed and raise offset by count to page forward (e.g. count=5,
-            offset=0 then offset=5). A window deeper than the query's available
+            fixed and raise offset by one to page forward (e.g. count=5,
+            offset=0 then offset=1). A window deeper than the query's available
             results returns fewer or none — use `brave.paged(...)` for a robust
             multi-page fetch that handles this and dedupes. News/image/video
             also accept it.
@@ -1979,7 +1894,7 @@ def _search_full(
     if offset is not None and not (0 <= offset <= 9):
         raise ValueError(
             "offset must satisfy 0 <= offset <= 9 (Brave's real page window), "
-            "got {}. To fetch more than ~10 results across a query, page forward "
+            "got {}. To fetch additional pages for a query, page forward "
             "by re-calling with a larger offset, or use `brave.paged(...)` for a "
             "handled multi-page fetcher.".format(offset)
         )
@@ -2195,14 +2110,10 @@ def paged(
 
     This is the robust "total > single page" helper on top of `search()`. Brave
     pages a query through a shallow offset window (`offset` 0..9), so to gather
-    more results than one page you must advance the offset by count repeatedly.
+    more results than one page you advance the offset by one per page.
     `paged()` does that, tolerates pages that come back short or empty, stops
     when the target `total` is reached or the feed indicates no more results
     exist, dedupes by URL, and returns one combined dict.
-
-    Verified live against the web/news/video endpoints: offset genuinely advances
-    to newer results mid-query, and Brave stops returning when the window is
-    exhausted, so this merges without duplicating.
 
     Args:
         query: search text.
@@ -2242,7 +2153,6 @@ def paged(
         if not items:
             exhausted = True
             break
-        added = 0
         for it in items:
             if total is not None and len(results) >= total:
                 break
@@ -2252,22 +2162,17 @@ def paged(
                     continue
                 seen.add(url)
             results.append(it)
-            added += 1
         pages += 1
         q = page.get("query") or {}
         more = q.get("more_results_available")
         if more is False:                   # Brave says no later results exist.
             exhausted = True
             break
-        # Advance. If a page contributed nothing new and offset didn't move
-        # (e.g. small count where count<=0) avoid an infinite loop.
-        if added == 0 and offset + count >= 10:
-            exhausted = not more if more is not None else True
-            break
-        if offset + count > 9:              # next offset would exceed the window.
+        # Offset counts pages, independently of the requested page size.
+        if offset + 1 > 9:                  # next page would exceed the window.
             exhausted = True
             break
-        offset += count
+        offset += 1
     out: dict[str, Any] = {
         "query": query,
         "results": results,

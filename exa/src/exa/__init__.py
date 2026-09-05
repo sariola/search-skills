@@ -1,54 +1,9 @@
-"""Exa search API skill for Prime Agent — advanced modes (v0.19).
+"""Exa search client.
 
-Native REST wrapper over the Exa Search API (https://api.exa.ai) using
-EXA_API_KEY, plus the WebSets API (https://api.exa.ai/websets). Unifies several
-contexts behind ergonomic entry points:
-  • ``await exa(query, ...)``    -> human-readable formatted summary (=== run)
-  • ``await exa.search(...)``    -> structured SearchResults for pipelines
-  • ``await exa.fetch(...)``     -> full page text / highlights / summary / extras
-  • ``exa.answer/stream_answer`` -> compact citation-grounded (or SSE-streamed) answer
-  • ``exa.agent(...)``           -> full agentic research run -> cited answer (+structured/cost)
-  • ``exa.agent_chat(...)``      -> multi-turn agent loop (previous_run_id chaining)
-  • ``exa.similar_to(URL)``      -> find_similar alias (more-like-this)
-  • ``exa.webset_recall(wsid)``  -> read-side total-match coverage estimate
-  • ``exa.search_to_csv(...)``   -> SearchResults.to_xlsx()/search_to_csv tabular exports
-  • ``exa.monitor_*``            -> recurring change-detection searches (/monitors)
-  • ``exa.webset_*``             -> bulk robust entity discovery (WebSets API)
-  • ``exa.import/webhook/event_*``-> WebSets imports, delivery webhooks, audit events
-  • ``exa.agent_trace(run_id)`` -> typed run-step audit (tools, sources, timing)
-  • ``exa.stream_answer_source`` -> typed SSE deltas (per-chunk metering + sources)
-  • ``exa.webset_snapshot/_diff`` -> client-side webset corpus snapshots + URL diff
-  • ``exa.explain(url)``         -> one-call readable page explanation
-  • ``exa.magic(query)``         -> deep search + answer + markdown pipeline
-  • ``exa.github_repo(...)``     -> client-side GitHub repo profile (owner/stars/readme) (v0.19)
-  • ``exa.code_search / hf_models / hf_discussions``   dev code & HF surfaces (v0.19)
-  • ``exa.dev_help / find_used_by / dev_report``        dev questions, pkg users, dev README (v0.19)
-
-This module intentionally tracks the live OpenAPI spec (api.exa.ai/openapi.json).
-Notable facts the wrapper accommodates:
-
-  * ``type`` accepts ``auto``, ``instant``, ``fast``, ``hybrid``, ``deep-lite``,
-    ``deep``, ``deep-reasoning`` plus legacy ``keyword`` / ``neural`` / ``magic``
-    (``magic`` -> ``deep``). ``semantic`` is NOT valid (400).
-  * Rich per-result fields (image, favicon, publishedDate, summary, highlights,
-    extras, entities) are only returned when requested via the ``contents``
-    block — ask explicitly with ``with_highlights`` / ``with_summary`` /
-    ``extras_links`` etc.
-  * ``output_schema`` (+ ``system_prompt``) converts a search into a
-    citation-grounded synthesized answer, surfaced by ``SearchResults.answer``
-    and ``.answer_grounding``.
-  * ``num_results`` is capped at 100 by the API; we validate client-side so a
-    bad value fails fast with a clear message instead of a bare 400.
-  * ``company`` / ``people`` categories reject publish-date filters and
-    ``exclude_domains`` with a 400 — guarded locally with a clear error.
-  * ``answer()``/``stream_answer()`` accept an undocumented ``citationFormat``
-    (``citation_format=``) requesting rich per-source citation fields
-    (``id``/``image``/``favicon``/``author``/``publishedDate``) — forwarded
-    verbatim (v0.14). ``agent_chat`` takes a per-turn ``schemas=[...]`` list
-    for progressive multi-schema pipelines; ``search_to_jsonl`` exports
-    JSON-native lines without pandas.
+Use search() for structured results and run() for readable output.
+See SKILL.md and its task-specific references for workflows and limitations.
+Awaitable return values provide compatibility, not nonblocking I/O.
 """
-
 from __future__ import annotations
 
 import json
