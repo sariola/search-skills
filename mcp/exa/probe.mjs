@@ -178,9 +178,15 @@ ok = (await call("exa_webset_monitor_list", { limit: 5 }, "webset_monitor_list(r
 ok = (await call("exa_import_list", { limit: 5 }, "import_list(route check)", { planGateOk: true })).passed && ok;
 ok = (await call("exa_webhook_list", { limit: 5 }, "webhook_list(route check)", { planGateOk: true })).passed && ok;
 ok = (await call("exa_event_list", { limit: 5 }, "event_list(route check)", { planGateOk: true })).passed && ok;
+// Wire-shape pin: the API wants REPEATED types= keys (types=a&types=b). A
+// comma-joined value 400s as bad_request, so this fails if that regresses.
+ok = (await call("exa_event_list", { limit: 5, types: ["webset.search.completed", "webset.created"] }, "event_list(types[] → repeated keys)", { planGateOk: true })).passed && ok;
 
 // Negative: monitor_batch with no filter must be rejected client-side.
 ok = (await call("exa_monitor_batch", { action: "pause" }, "monitor_batch(no filter → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+// Wire-shape pin: the body key is dry_run (snake_case). A camelCase dryRun 400s
+// with "Unrecognized key" → bad_request, so this fails if that regresses.
+ok = (await call("exa_monitor_batch", { action: "pause", name: "__nonexistent_probe__", dryRun: true }, "monitor_batch(dry_run reaches wire)", { planGateOk: true })).passed && ok;
 
 // ---- Resources --------------------------------------------------------------
 const c = await client.readResource({ uri: "exa-content:///https%3A%2F%2Fexample.com" });

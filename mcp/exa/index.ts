@@ -862,7 +862,8 @@ class ExaClient {
     if (!Object.keys(filter).length) {
       throw new ExaApiError("exa_monitor_batch needs at least one filter (name|status|metadata)", "bad_request");
     }
-    const body: any = { action: args.action, filter, dryRun: args.dryRun ?? true, limit: args.limit ?? 50 };
+    // Wire key is dry_run (snake_case) — matches the live-verified Python client.
+    const body: any = { action: args.action, filter, dry_run: args.dryRun ?? true, limit: args.limit ?? 50 };
     return this.rateLimiter.enqueue(
       () => this.post("/monitors/batch", body, { timeoutMs: 45000, idempotent: false }), "exa_monitor_batch");
   }
@@ -1070,7 +1071,9 @@ class ExaClient {
     const types: string[] = [];
     if (args.types) types.push(...args.types);
     if (args.type && !types.includes(args.type)) types.push(args.type);
-    if (types.length) params.set("types", types.join(","));
+    // The API expects repeated types= keys (httpx list semantics), not a
+    // comma-joined value — append one param per type.
+    for (const t of types) params.append("types", t);
     if (args.createdBefore) params.set("createdBefore", args.createdBefore);
     if (args.createdAfter) params.set("createdAfter", args.createdAfter);
     const qs = params.toString() ? `?${params.toString()}` : "";
@@ -3451,10 +3454,12 @@ async function main() {
         case "exa_monitor_update": {
           const monitorId = requiredStr(args, "monitorId", "exa_monitor_update");
           const body: any = {};
-          for (const k of ["search", "trigger", "webhook", "metadata", "status"]) {
-            const v = pick(args, k, k === "status" ? "string" : "object");
+          for (const k of ["search", "trigger", "webhook", "metadata"]) {
+            const v = pick(args, k, "object");
             if (v !== undefined) body[k] = v;
           }
+          const status = pickEnum(args, "status", MONITOR_STATUSES, "exa_monitor_update");
+          if (status !== undefined) body.status = status;
           if (!Object.keys(body).length) {
             throw new ExaApiError("exa_monitor_update needs at least one field (search|trigger|webhook|metadata|status)", "bad_request");
           }
