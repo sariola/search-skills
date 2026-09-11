@@ -93,6 +93,12 @@ validation. The request layer retries transient failures and honors Retry-After;
 avoid layering unbounded retries on top. Correct auth/parameters or state the
 plan limitation when the response is definitive.
 
+The `error` field in an error body is normally an object, but some upstream/CDN
+shapes return it as a plain string. Classification is robust to that: a
+non-dict `error` is treated as empty, so error mapping never crashes on an
+unexpected body shape and the HTTP status + top-level `message` still drive the
+category.
+
 Local mode can fall back to web search; inspect `fallback`. Stub helpers
 `related`, `trending_topics`, `trending_libs`, and `docker_aliases` return
 limitation notes rather than discovery data. Do not use them as working indexes.

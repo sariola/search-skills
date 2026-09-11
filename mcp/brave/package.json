@@ -1,0 +1,28 @@
+{
+  "name": "brave-search-mcp-server",
+  "version": "1.0.0",
+  "description": "A Model Context Protocol server for the Brave Search API (api.search.brave.com).",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "brave-search-mcp-server": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "bun build index.ts --target=node --outdir build && node -e \"require('fs').chmodSync('build/index.js','755')\"",
+    "typecheck": "tsc --noEmit",
+    "prepare": "bun run build",
+    "watch": "bun build --watch index.ts --target=node --outdir build",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "start": "bun build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.9",
+    "typescript": "^5.3.3"
+  }
+}

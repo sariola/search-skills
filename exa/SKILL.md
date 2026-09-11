@@ -41,6 +41,7 @@ from an event loop; `await` alone does not provide concurrency.
 | Search several distinct facets | `deep_research([q1, q2], num_results=5)` |
 | Provider-generated answer with citations | `answer(question)` → `Answer` |
 | Multi-step hosted research | `agent(question, ...)`; read [jobs.md](references/jobs.md) |
+| Many sub-requests at once | `batch_create([...])` + `poll_batch(id)`; read [jobs.md](references/jobs.md) |
 | Persistent entity collection | `webset_*`; read [websets.md](references/websets.md) |
 
 Start with `search_type="auto"` and a small result count. Use a precise natural

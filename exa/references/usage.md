@@ -119,6 +119,12 @@ retry auth, validation, or entitlement errors. Correct parameters or use an
 available path while stating the limitation. For uncertain writes, inspect the
 existing resource before retrying creation.
 
+Error detail is read defensively: when a non-2xx response's body is not valid
+JSON (an HTML error page, a CDN banner, or a truncated body), the raw text is
+included in the raised message rather than crashing the parse. Only idempotent
+requests (GET, or explicitly marked) are retried, so state-creating POST/PATCH/DELETE
+calls are never double-sent.
+
 Use the [official Exa documentation](https://exa.ai/docs) to verify changing
 endpoint support; the bundled [module](../src/exa/__init__.py) determines Python
 signatures. A wrapper's existence does not guarantee a plan permits its endpoint.

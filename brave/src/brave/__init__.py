@@ -17,29 +17,55 @@ import httpx
 # Clean engine: one client, one worker channel, one-way results.
 # No per-call TLS, no busy-wait thread spawn, no shared mutable output dict.
 # ---------------------------------------------------------------------------
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 
 _ENGINE_LIMITS = httpx.Limits(max_connections=16, max_keepalive_connections=8)
+# Hard ceiling on parallel in-flight = the keep-alive connection pool. A worker
+# beyond this would only block on a connection, so it buys nothing.
+_POOL_MAX = _ENGINE_LIMITS.max_connections
 _CLIENT = None
 _WORKERS = None
+_CLIENT_LOCK = threading.Lock()
+_WORKERS_LOCK = threading.Lock()
+# Set on a pool worker while it runs a _fanout thunk. A _fanout called *from*
+# such a worker (a nested fan-out) must NOT submit-and-block on the shared
+# pool, or it deadlocks the pool that its own outer worker is parked on.
+_IN_FANOUT = threading.local()
+
 
 def _http() -> "httpx.Client":
-    """Process-lifetime client. Keep-alive pool; thread-safe for request()."""
+    """Process-lifetime client. Keep-alive pool; thread-safe for request().
+
+    Double-checked under a lock so concurrent first-use constructs exactly one
+    Client (a leaked second Client would hold an unclosed socket pool).
+    """
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = httpx.Client(
-            limits=_ENGINE_LIMITS,
-            follow_redirects=False,
-            headers={"Accept": "application/json"},
-        )
+        with _CLIENT_LOCK:
+            if _CLIENT is None:
+                _CLIENT = httpx.Client(
+                    limits=_ENGINE_LIMITS,
+                    follow_redirects=False,
+                    headers={"Accept": "application/json"},
+                )
     return _CLIENT
 
 
-def _pool(n: int = 8) -> ThreadPoolExecutor:
+def _pool() -> ThreadPoolExecutor:
+    """Process-lifetime worker pool sized to the connection ceiling.
+
+    A single shared pool is created under a lock (avoids a second, never-shut-
+    down pool on concurrent first use). Per-call parallelism is bounded
+    separately in ``_fanout`` — do NOT grow this pool per call.
+    """
     global _WORKERS
     if _WORKERS is None:
-        _WORKERS = ThreadPoolExecutor(max_workers=n, thread_name_prefix="brave")
+        with _WORKERS_LOCK:
+            if _WORKERS is None:
+                _WORKERS = ThreadPoolExecutor(
+                    max_workers=_POOL_MAX, thread_name_prefix="brave")
     return _WORKERS
 
 
@@ -62,15 +88,51 @@ def _retry_after_seconds(resp, fallback: float) -> float:
 
 
 def _fanout(jobs, *, concurrency: int = 8):
-    """Submit (key, thunk) pairs; return [(key, ok, value_or_exc), ...] in order.
+    """One-way fan-out: submit all (key, thunk) against the shared pool, collect
+    in order. No shared mutable dict; each job's exception is isolated into
+    ``(key, False, exc)``.
 
-    All work is queued first (one-way), then collected. Workers do not write
-    a shared dict. Bounded by the process-lifetime pool.
+    ``concurrency`` bounds how many jobs run in parallel (default 8, capped at
+    the keep-alive connection pool so extra workers can only queue on a
+    connection). All jobs are submitted up front, so a slow job never blocks
+    the others from starting; the semaphore throttles execution, not submission.
+
+    A fan-out that is itself running on a pool worker (a *nested* fan-out, e.g.
+    ``batch(mode='all')`` -> ``search`` -> a per-endpoint fan-out) runs its jobs
+    **inline** in the current thread rather than submitting to the shared pool:
+    submitting to the same pool this worker is parked on and then blocking on
+    those futures deadlocks once the pool is saturated by its siblings. Inline
+    execution keeps real concurrency at or below the connection ceiling (the
+    parent fan-out's workers already provide the parallelism) and avoids a
+    worker spawning sub-pools.
     """
     if not jobs:
         return []
-    pool = _pool(max(8, int(concurrency or 8)))
-    futs = [(key, pool.submit(thunk)) for key, thunk in jobs]
+    if bool(getattr(_IN_FANOUT, "value", False)):
+        # Nested: run inline (no new threads). In-order, per-job exception
+        # isolation preserved; we simply don't re-parallelize inside a worker.
+        out = []
+        for key, thunk in jobs:
+            try:
+                out.append((key, True, thunk()))
+            except Exception as e:
+                out.append((key, False, e))
+        return out
+
+    n = max(1, min(int(concurrency or 8), _POOL_MAX))
+    pool = _pool()
+    sem = threading.Semaphore(n)
+
+    def _run_thunk(thunk):
+        prev = getattr(_IN_FANOUT, "value", False)
+        _IN_FANOUT.value = True
+        try:
+            with sem:
+                return thunk()
+        finally:
+            _IN_FANOUT.value = prev
+
+    futs = [(key, pool.submit(_run_thunk, thunk)) for key, thunk in jobs]
     out = []
     for key, fut in futs:
         try:
@@ -515,212 +577,11 @@ def _agent_view(data: dict) -> dict:
 # so their cross-calls transparently receive the same dict / generic wrappers
 # and keep working unmodified. Nothing here changes the wire behaviour.
 # ---------------------------------------------------------------------------
-import functools as _functools
-import types as _types
-
-
-def _identity_await(self):
-    """__await__ for result classes: awaiting yields the instance itself."""
-    if False:  # pragma: no cover - makes this a generator (required by await)
-        yield
-    return self
-
-
-class _AsyncDict(dict):
-    """A dict that is also awaitable; ``await x`` yields a plain ``dict``."""
-    __slots__ = ()
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return dict(self)
-
-
-class _AsyncStr(str):
-    """A str that is also awaitable; ``await x`` yields the plain ``str``."""
-    __slots__ = ()
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return str(self)
-
-
-class _AsyncList(list):
-    """A list that is also awaitable; ``await x`` yields a plain ``list``."""
-    __slots__ = ()
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return list(self)
-
-
-class _AsyncInt(int):
-    """An int that is also awaitable; ``await x`` yields a plain ``int``."""
-    __slots__ = ()
-
-    def __new__(cls, v):
-        return int.__new__(cls, int(v))
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return int(self)
-
-
-class _AsyncFloat(float):
-    """A float that is also awaitable; ``await x`` yields a plain ``float``."""
-    __slots__ = ()
-
-    def __new__(cls, v):
-        return float.__new__(cls, float(v))
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return float(self)
-
-
-class _AsyncBool(int):
-    """A bool that is also awaitable; ``await x`` yields a plain ``bool``."""
-    __slots__ = ()
-
-    def __new__(cls, v):
-        return int.__new__(cls, bool(v))
-
-
-    def __str__(self):
-        return str(bool(self))
-
-    def __repr__(self):
-        return repr(bool(self))
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return bool(self)
-
-
-def _wrap_result(value):
-    """Return a value that works both with and without ``await``."""
-    if isinstance(value, dict):
-        return _AsyncDict(value)
-    if isinstance(value, str):
-        return _AsyncStr(value)
-    if isinstance(value, list):
-        return _AsyncList(value)
-    if isinstance(value, bool):
-        return _AsyncBool(value)
-    if isinstance(value, int):
-        return _AsyncInt(value)
-    if isinstance(value, float):
-        return _AsyncFloat(value)
-    # Any object that already knows how to be awaited (our own result classes,
-    # or a swallowed coroutine) is returned untouched.
-    if hasattr(value, "__await__"):
-        return value
-    # Fallback generic proxy for anything else (incl. None).
-    return _AsyncScalar(value)
-
-
-class _AsyncScalar(object):
-    """Awaitable + mostly-transparent wrapper for any other type (incl. None)."""
-
-    __slots__ = ("_v",)
-
-    def __init__(self, v):
-        object.__setattr__(self, "_v", v)
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return self._v
-
-    def __getattr__(self, name):
-        return getattr(self._v, name)
-
-    def __getitem__(self, k):
-        return self._v[k]
-
-    def __setitem__(self, k, val):
-        self._v[k] = val
-
-    def __iter__(self):
-        return iter(self._v)
-
-    def __contains__(self, item):
-        return item in self._v
-
-    def __len__(self):
-        return len(self._v)
-
-    def __bool__(self):
-        return bool(self._v)
-
-    def __str__(self):
-        return str(self._v)
-
-    def __repr__(self):
-        return repr(self._v)
-
-    def __float__(self):
-        return float(self._v)
-
-    def __int__(self):
-        return int(self._v)
-
-    def __eq__(self, o):
-        return self._v == o
-
-    def __ne__(self, o):
-        return self._v != o
-
-    def __hash__(self):
-        return hash(self._v)
-
-    def __call__(self, *a, **k):
-        return self._v(*a, **k)
-
-    def __format__(self, spec):
-        return format(self._v, spec)
-
-
-def _make_async(fn):
-    """Wrap a sync public function so calls work with or without ``await``."""
-    import functools
-
-    @functools.wraps(fn)
-    def _async_aware(*args, **kwargs):
-        return _wrap_result(fn(*args, **kwargs))
-
-    return _async_aware
-
-
-def _apply_async_to(module_dict):
-    """Replace every public function with an async-aware twin.
-
-    Private helpers (leading `_`), classes, and inherently asynchronous /
-    streaming callables are untouched:
-
-      * generator functions (``yield`` in the body, e.g. ``stream_answer`` /
-        ``stream_search``) keep their line-by-line streaming behaviour;
-      * already ``async def`` coroutines / async generators are left alone.
-
-    ``functools.wraps`` preserves each wrapped function's name/docstring/signature.
-    """
-    import inspect as _inspect
-    for _name, _obj in list(module_dict.items()):
-        if _name.startswith("_"):
-            continue
-        if not isinstance(_obj, _types.FunctionType):
-            continue
-        if getattr(_obj, "__name__", "") == "_async_aware":
-            continue
-        if _inspect.isgeneratorfunction(_obj) or _inspect.isasyncgenfunction(_obj) \
-           or _inspect.iscoroutinefunction(_obj):
-            continue
-        module_dict[_name] = _make_async(_obj)
+from ._async import (
+    _identity_await, _wrap_result, _make_async, _apply_async_to,
+    _AsyncDict, _AsyncStr, _AsyncList, _AsyncInt, _AsyncFloat, _AsyncBool,
+    _AsyncScalar, _functools as _functools, _types as _types,
+)
 
 
 DEFAULT_API_URL = "https://api.search.brave.com"
@@ -732,6 +593,9 @@ PATHS = {
     "video": "/res/v1/videos/search",
     "local": "/res/v1/local/search",
     "place_search": "/res/v1/local/place_search",   # round-11: dedicated POI/place endpoint
+    "llm_context": "/res/v1/llm/context",           # round-19: RAG/grounding (plan-gated)
+    "suggest": "/res/v1/suggest/search",            # round-19: query autocomplete (plan-gated)
+    "spellcheck": "/res/v1/spellcheck/search",      # round-19: corrected query form (plan-gated)
 }
 
 MODES = {
@@ -827,6 +691,17 @@ class BraveError(RuntimeError):
         return self.category == "rate_limit"
 
 
+def _body_err(body):
+    """The response body's `error` object, robustly.
+
+    Brave's `error` field is normally a dict (``{"code": ..., "meta": ...}``),
+    but some upstream/CDN error shapes carry it as a *string*. Treat a
+    non-dict as empty so classification never crashes on an unexpected shape.
+    """
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
 def _classify_response(path, status, body, timeout) -> "BraveError":
     """Turn an HTTP response into a categorised BraveError.
 
@@ -848,10 +723,19 @@ def _classify_response(path, status, body, timeout) -> "BraveError":
     if status == 429:
         category = "rate_limit"
     elif isinstance(body, dict):
-        err = body.get("error") if isinstance(body.get("error"), dict) else {}
+        err = _body_err(body)
         code = err.get("code")
         meta = err.get("meta") if isinstance(err.get("meta"), dict) else {}
-        if code == "SUBSCRIPTION_TOKEN_INVALID" or meta.get("component") == "authentication":
+        if code == "OPTION_NOT_IN_PLAN":
+            # Plan-gated add-on (LLM Context / GNews / suggest / spellcheck /
+            # docs / …). Distinct from "http" so an agent can read it as "key
+            # lacks the add-on" rather than a request bug — mirroring the MCP
+            # server's category mapping. NOTE: Brave attaches
+            # meta.component="authentication" to this error too, so this branch
+            # must run BEFORE the auth check or it is silently re-classified.
+            category = "plan"
+            details = err.get("detail")
+        elif code == "SUBSCRIPTION_TOKEN_INVALID" or meta.get("component") == "authentication":
             category = "auth"
             details = err.get("detail")
         elif code == "VALIDATION" or status == 422 and meta.get("errors"):
@@ -950,19 +834,28 @@ def _read_key_file(path, names):
     return None
 
 def _get_api_key():
+    """Resolve the Brave API key, caching a hit and re-validating on rotation.
+
+    The cache is invalidated whenever a candidate environment variable differs
+    from the cached key (detects rotation/removal without re-reading key
+    files). Raises a typed ``BraveError`` (category ``auth``) rather than a bare
+    ``RuntimeError`` when no key can be found.
+    """
     label = _API_LABEL
-    if label in _API_KEY_CACHE:
-        return _API_KEY_CACHE[label]
+    cached = _API_KEY_CACHE.get(label)
+    if cached:
+        key = cached if isinstance(cached, str) else cached[0]
+        if all(os.environ.get(n, "") in ("", key) for n in _API_KEY_NAMES):
+            return key
     key = _seek_api_key(_API_KEY_NAMES)
     if not key:
-        raise RuntimeError(
+        raise BraveError(
             f"{label} search is not configured: no API key "
             f"({', '.join(_API_KEY_NAMES)}) was found in the environment "
             f"or any key file. Ask the user to run /login (choose {label}) "
-            f"or export {_API_KEY_NAMES[0]}; the skill picks it up automatically."
+            f"or export {_API_KEY_NAMES[0]}; the skill picks it up automatically.",
+            category="auth",
         )
-    for n in _API_KEY_NAMES:
-        os.environ.setdefault(n, key)
     _API_KEY_CACHE[label] = key
     return key
 
@@ -1030,18 +923,24 @@ def _request(path, params, timeout, *, fallback=None, retries=2, headers=None):
             body = resp.json()
         except Exception:
             body = resp.text
+        err = _body_err(body)          # the `error` object, or {} (robust to a string)
+        meta = err.get("meta") if isinstance(err.get("meta"), dict) else {}
         fast_fail = resp.status_code in (401, 403) or (
             isinstance(body, dict) and (
-                (body.get("error") or {}).get("code") == "SUBSCRIPTION_TOKEN_INVALID"
-                or (resp.status_code == 422 and ((body.get("error") or {}).get("code") == "VALIDATION"))
-                or (body.get("error") or {}).get("meta", {}).get("component") == "authentication"
+                err.get("code") == "SUBSCRIPTION_TOKEN_INVALID"
+                or (resp.status_code == 422 and err.get("code") == "VALIDATION")
+                or meta.get("component") == "authentication"
             )
         )
         retryable = resp.status_code in (429, 500, 502, 503, 504)
-        if fallback and resp.status_code != 200 and (retryable or not fast_fail and fallback is not None):
+        if fallback and resp.status_code != 200 and (retryable or not fast_fail):
             if _fallback_ok(path, params, headers, timeout, fallback, resp.status_code):
-                # _fallback handles local->web etc. before we raise.
-                return _run_fallback(fallback, params, headers, timeout, path, resp.status_code)
+                # Best-effort alternate endpoint (local->web). If it succeeds we
+                # return its data (tagged); if it *also* fails we surface the
+                # original request's classified error rather than returning None.
+                fb = _run_fallback(fallback, params, headers, timeout, path, resp.status_code)
+                if fb is not None:
+                    return fb
         if fast_fail or not retryable:
             raise _classify_response(path, resp.status_code, body, timeout)
         error = _classify_response(path, resp.status_code, body, timeout)
@@ -1776,7 +1675,7 @@ def _summarizer(data: dict) -> Optional[dict]:
             out["deep_link"] = "https://search.brave.com/summarizer?" + _up.urlencode({"key": key})
         except Exception:
             out["key"] = key
-            out["deep_link"] = "https://search.brave.com/summarizer?key=" + _up.urlencode({"key": key})
+            out["deep_link"] = "https://search.brave.com/summarizer?" + _up.urlencode({"key": key})
     elif key is not None:
         out["key"] = key
     return out
@@ -2264,6 +2163,15 @@ def research(
          "n", "sources":[hosts], "infobox", "faq", "videos", "discussions",
          "summary_deep_link", "per_search", "exhausted", "render": str,
          "duplicates": int}
+
+        ``n`` is the number of *unique* items kept after cross-query URL-dedup.
+        ``duplicates`` is how many candidate results were dropped by that dedup
+        (total candidates seen across all queries minus ``n``), i.e. the overlap
+        between query variations. ``per_search[i].n`` is the unique items added
+        by query ``i``; ``per_search[i].candidates`` is that query's raw count
+        before dedup. ``summary_deep_link`` is the Brave AI-answer deep-link for
+        the primary query (or ``None`` if unavailable); ``summary_dead_link``
+        is a back-compat alias for it.
     """
     qs = [q for q in ([query] if not queries else queries) if q]
     out_items: list[dict] = []
@@ -2282,15 +2190,18 @@ def research(
                 per_search.append({"query": qq, "error": f"{e.category}: {e}"})
                 continue
             added = 0
+            candidates = 0
             for it in (page.get("results") or page.get("web") or []):
                 url = it.get("url") or it.get("page_url")
+                candidates += 1
                 if url and url in seen:
                     continue
                 if url:
                     seen.add(url)
                 out_items.append({"query": qq, **it})
                 added += 1
-            per_search.append({"query": qq, "n": added, "mode": mode})
+            per_search.append({"query": qq, "n": added, "candidates": candidates,
+                               "mode": mode})
             if primary is None:
                 primary = page
             continue
@@ -2301,8 +2212,10 @@ def research(
                 exhausted_any += 1
             pgm = pg.get("web_meta") if isinstance(pg.get("web_meta"), dict) else {}
             added = 0
+            candidates = 0
             for it in pg.get("results") or []:
                 url = it.get("url") or it.get("page_url")
+                candidates += 1
                 if url in seen:
                     continue
                 seen.add(url)
@@ -2317,6 +2230,7 @@ def research(
                     web_meta = {k: primary.get(k) for k in
                                 ("infobox", "faq", "videos", "discussions")}
             per_search.append({"query": qq, "pages": pg.get("pages"), "n": added,
+                               "candidates": candidates,
                                "exhausted": pg.get("exhausted")})
         except BraveError as e:
             per_search.append({"query": qq, "error": f"{e.category}: {e}"})
@@ -2342,11 +2256,14 @@ def research(
         "faq": web_meta.get("faq") or [],
         "videos": web_meta.get("videos") or [],
         "discussions": web_meta.get("discussions") or [],
+        "summary_deep_link": summary_dl,
+        # Back-compat alias for the pre-rename key.
         "summary_dead_link": summary_dl,
         "per_search": per_search,
         "exhausted": (exhausted_any == len(qs) and len(qs) > 0) if qs else False,
         "render": render,
-        "duplicates": sum(p.get("n", 0) for p in per_search if p.get("n")) - len(out_items),
+        "duplicates": max(
+            sum(p.get("candidates", 0) for p in per_search) - len(out_items), 0),
     }
 
 
@@ -2379,9 +2296,14 @@ def software(
 
     Returns:
         {"query", "package", "results":[software web items], "n",
-         "registries":{pypi->[names], npm->[names]}, "versions":[version str...],
+         "registry":{pypi->[names], npm->[names]},
+         "versions":[{name, version, url, code}, ...],
          "render": str} — `render` is a readable summary; `results[i].software`
-         is the registry metadata dict. Non-software hits are dropped.
+         is the registry metadata dict. `registry` maps each registry name
+         (e.g. "pypi", "npm") to the package names found there. `versions` is a
+         list of dicts, one per software result that carried a version, each
+         with the package `name`, the `version` string, the result `url`, and
+         the `code` repository URL (or None). Non-software hits are dropped.
     """
     data = _search_full(package, mode="web", count=count, country=country,
                   safe_search=safe_search, timeout=timeout)
@@ -3221,7 +3143,8 @@ def drinks(
         rc = r.get("recipe") or {}
         tokens = ("%s %s" % (rc.get("title") or "", rc.get("category") or ""))
         tl = tokens.lower()
-        dom = (r.get("domain") or "").lower()
+        # `_web_item`-normalized items expose the host as `site` (not `domain`).
+        dom = (r.get("site") or r.get("domain") or "").lower()
         cat = (rc.get("category") or "").strip().lower()
         drink_hint = (
             cat in DRINK_CATEGORIES
@@ -3478,7 +3401,8 @@ def open_now(row, *, now=None):
             tz = ZoneInfo(tz_str)
         except Exception:
             tz = None
-    now = datetime.now(tz) if tz else datetime.now()
+    if now is None:
+        now = datetime.now(tz) if tz else datetime.now()
     day = now.strftime("%A")
     window = None
     if hours:
@@ -4084,7 +4008,8 @@ def rich(query, *, fetch=True, count=5, timeout=45.0, **kw):
     vertical = (hint_obj or {}).get("vertical")
     if not cb or not fetch:
         return {"type": "rich", "query": query, "hint": hint,
-                "callback_key": cb, "vertical": vertical, "results": []}
+                "callback_key": cb, "vertical": vertical, "results": [],
+                "render": "", "raw": None}
     dd = _rich_fetch(cb, timeout=timeout)
     results = [_rich_result(r) for r in (dd.get("results") or []) if isinstance(r, dict)]
     v = vertical or (results[0]["subtype"] if results else None)
@@ -4627,7 +4552,7 @@ def _request_list(path, params_pairs, timeout=45.0):
         body = resp.json()
     except Exception:
         pass
-    err = body.get("error") or {}
+    err = _body_err(body)
     code = err.get("code")
     if resp.status_code == 401 or code == "SUBSCRIPTION_TOKEN_INVALID":
         raise BraveError(f"Brave auth error for '{path}'", category="auth")
@@ -5873,14 +5798,15 @@ def batch(queries, *, mode="web", count=4, concurrency=6, timeout=45.0, **kw):
         queries: iterable of search terms (or a single string).
         mode: a search mode (default `web`).
         count: per-query result count.
-        concurrency: max in-flight requests at once (default 8).
+        concurrency: max in-flight requests at once (default 6).
         timeout: HTTP timeout seconds.
         **kw: forwarded to each ``search()`` (freshness, country, safe_search,
             loc, ...).
 
     Returns:
-        {"queries": [...], "mode": ..., "results": {query: {...}},
-        "ordered": [...], "n", "n_ok", "render"}.
+        {"queries": [...], "results": {query: {...}}, "n_ok": int} — one
+        structured result per query; a query that fails gets an ``error`` slot
+        without aborting the others.
     """
     if isinstance(queries, str):
         qs = [queries]
@@ -6046,7 +5972,7 @@ def search_worker(query, *, depth=2, breadth=4, timeout=45.0, **kw):
     Args:
         query: seed search term.
         depth: max BFS hop count (default 2).
-        breadth: max pages crawled per hop (default 3).
+        breadth: max pages crawled per hop (default 4).
         timeout / **kw: forwarded to ``search()``.
 
     Returns:
@@ -6190,7 +6116,7 @@ def docs(query, *, count=14, country=None, search_lang=None, safe_search="modera
 
     Args:
         query: the technology/feature to find docs for.
-        count: how many web results to fetch & re-rank (default 12).
+        count: how many web results to fetch & re-rank (default 14).
         country / search_lang / safe_search / timeout: forwarded to `search()`.
         freshness: optional freshness filter forwarded to `search()`.
 
@@ -6399,7 +6325,7 @@ def cve_lookup(cve, *, count=8, news_count=4, freshness=None, country=None,
 
     Args:
         cve: a CVE id (case-insensitive, e.g. "cve-2023-2566").
-        count: web results to pull for the advisory pool (default 12).
+        count: web results to pull for the advisory pool (default 8).
         news_count: news headlines to pull (default 4; 0 disables news).
         freshness: optional freshness passed to the news search.
         country / safe_search / timeout: forwarded to `search()`.
@@ -6739,7 +6665,7 @@ def github_issues(query, *, count=12, timeout=45.0, **kwargs):
 
     Args:
         query: issue-flavored query (e.g. "ollama vulkan error").
-        count: results to scan (default 20).
+        count: results to scan (default 12).
         timeout / **kwargs: forwarded to _search_full().
 
     Returns:
@@ -7206,11 +7132,273 @@ def trending_libs(query=None):
             "brave.headlines(query) for current headlines.")
 
 # ---------------------------------------------------------------------------
+# Newer Brave retrieval surfaces: LLM Context (grounding), GNews, suggest,
+# spellcheck. These hit the REST endpoints directly (like `rich()` does for
+# /res/v1/web/rich) and return a slimmed dict. LLM Context / suggest /
+# spellcheck are plan-gated: on a key that lacks the add-on they raise a
+# `BraveError` with category "plan" (the request reached the endpoint correctly
+# and is not a bug).
+# ---------------------------------------------------------------------------
+_CONTEXT_THRESHOLD_MODES = ("strict", "balanced", "lenient")
+
+
+def llm_context(
+    query: str,
+    *,
+    count: int = 20,
+    max_tokens: int = 8192,
+    max_urls: int = 20,
+    max_snippets: int = 50,
+    max_tokens_per_url: int = 4096,
+    max_snippets_per_url: int = 50,
+    threshold_mode: str = "balanced",
+    enable_local: Optional[bool] = None,
+    goggles: Optional[str] = None,
+    country: Optional[str] = None,
+    search_lang: Optional[str] = None,
+    timeout: float = 60.0,
+) -> dict:
+    """Fetch RAG/grounding context for a query via Brave's LLM-Context endpoint.
+
+    This is Brave's evidence-surface for grounded answer generation: instead of
+    a prose answer it returns a *set of high-value URLs* (``grounding.generic``,
+    each with the most relevant snippets), plus location data
+    (``grounding.poi`` / ``grounding.map``) when ``enable_local`` is set, plus a
+    per-URL ``sources`` map (hostname / age / title).
+
+    ``maximum_number_of_tokens`` is a HARD cap over all grounding content; the
+    API selects the highest-value URLs / snippets within it.
+
+    **Plan-gated:** the key's plan must include the LLM-Context add-on; a
+    ``400`` ``OPTION_NOT_IN_PLAN`` raises ``BraveError`` (category ``plan``) —
+    that means "key lacks the add-on", not a request bug.
+
+    Args:
+        query: the question / topic (<=400 chars, ~50 words or less).
+        count: web-search result count to ground from, 1-50 (default 20).
+        max_tokens: hard cap over all grounding content, 1024-32768 (default 8192).
+        max_urls: max URLs in the grounding, 1-50 (default 20).
+        max_snippets: max total snippets across all URLs, default 50 (max 256).
+        max_tokens_per_url: per-URL token cap, default 4096 (max 8192).
+        max_snippets_per_url: per-URL snippet cap, 1-100 (default 50).
+        threshold_mode: URL relevance threshold: "strict" | "balanced" | "lenient"
+            (default "balanced").
+        enable_local: include local / POI / map grounding when the query is
+            location-relevant (None = API default).
+        goggles: Brave Goggles URL or inline Goggles config to bias ranking.
+        country / search_lang: 2-letter ISO / ISO 639-1 localisation hints.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        {"query", "grounding": {"generic": [...], "poi": [...], "map": [...]},
+         "sources": {...}, "n_urls": int, "render": str, "raw": dict}
+    """
+    if len(query or "") > 400:
+        raise BraveError(
+            "llm_context(): 'query' must be <=400 characters "
+            f"(got {len(query)}); shorten it to ~50 words or fewer.",
+            category="bad_request",
+        )
+    if threshold_mode not in _CONTEXT_THRESHOLD_MODES:
+        raise BraveError(
+            f"llm_context(): threshold_mode must be one of "
+            f"{list(_CONTEXT_THRESHOLD_MODES)} (got {threshold_mode!r}).",
+            category="bad_request",
+        )
+    params: dict[str, object] = {
+        "q": query,
+        "count": max(1, min(count or 20, 50)),
+        "maximum_number_of_tokens": max(1024, min(max_tokens or 8192, 32768)),
+        "maximum_number_of_urls": max(1, min(max_urls or 20, 50)),
+        "maximum_number_of_snippets": max(1, min(max_snippets or 50, 256)),
+        "maximum_number_of_tokens_per_url": max(1, min(max_tokens_per_url or 4096, 8192)),
+        "maximum_number_of_snippets_per_url": max(1, min(max_snippets_per_url or 50, 100)),
+    }
+    if country:
+        params["country"] = country
+    if search_lang:
+        params["search_lang"] = search_lang
+    if threshold_mode:
+        params["context_threshold_mode"] = threshold_mode
+    if enable_local is not None:
+        params["enable_local"] = "true" if enable_local else "false"
+    if goggles:
+        params["goggles"] = goggles
+    raw = _request("/res/v1/llm/context", params, timeout)
+    grounding = raw.get("grounding") if isinstance(raw, dict) else None
+    grounding = grounding if isinstance(grounding, dict) else {}
+    generic = grounding.get("generic") if isinstance(grounding.get("generic"), list) else []
+    poi = grounding.get("poi") if isinstance(grounding.get("poi"), list) else []
+    mapb = grounding.get("map") if isinstance(grounding.get("map"), list) else []
+    sources = raw.get("sources") if isinstance(raw, dict) and isinstance(raw.get("sources"), dict) else {}
+    lines = [f"GROUNDING · '{query}' ({len(generic)} URLs within the token budget)"]
+    for i, g in enumerate(generic[:max_urls], start=1):
+        if not isinstance(g, dict):
+            continue
+        title = _clean_html(g.get("title")) or "(untitled)"
+        url = g.get("url") or ""
+        lines.append(f"{i}. {title}  {url}")
+        for s in (g.get("snippets") or [])[:3]:
+            lines.append(f"   · {_clean_html(s)[:240]}")
+    if not generic:
+        lines.append("   [no grounding URLs returned]")
+    if poi:
+        lines.append(f"\nLocal POI grounding ({len(poi)}):")
+        for p in poi[:10]:
+            lines.append(f"   · {_clean_html(p.get('title') or p.get('name')) or p.get('url')}")
+    return {
+        "query": query,
+        "grounding": {"generic": generic, "poi": poi, "map": mapb},
+        "sources": sources,
+        "n_urls": len(generic),
+        "render": "\n".join(lines),
+        "raw": raw,
+    }
+
+
+def gnews(
+    query: str,
+    *,
+    count: int = 5,
+    freshness: Optional[str] = None,
+    country: Optional[str] = None,
+    search_lang: Optional[str] = None,
+    safe_search: Optional[str] = None,
+    timeout: float = 45.0,
+) -> dict:
+    """Search news with the GNews block via ``/res/v1/news/search`` (``gnews=true``).
+
+    The same news endpoint as the news surface, but with ``gnews=true`` so the
+    response carries an alternative GNews block in addition to the standard
+    ``results``. Use when you want the GNews coverage of a topic.
+
+    Args:
+        query: the news query.
+        count: results to return, 1-20 (default 5).
+        freshness: recency window (pd/pw/pm/py or a ``YYYY-MM-DDtoYYYY-MM-DD`` range).
+        country / search_lang / safe_search: localisation + safety filters.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        {"query", "results": [standard news items], "gnews": <the GNews block>,
+         "n": int, "gnews_n": int, "render": str, "raw": dict}
+    """
+    params: dict[str, object] = {
+        "q": query,
+        "count": max(1, min(count or 5, 20)),
+        "gnews": "true",
+    }
+    if freshness:
+        params["freshness"] = freshness
+    if country:
+        params["country"] = country
+    if search_lang:
+        params["search_lang"] = search_lang
+    if safe_search:
+        params["safe_search"] = safe_search
+    raw = _request(PATHS["news"], params, timeout)
+    raw = raw if isinstance(raw, dict) else {}
+    results = raw.get("results") if isinstance(raw.get("results"), list) else []
+    gnews_block = raw.get("gnews")
+    gnews_items = gnews_block.get("results") if isinstance(gnews_block, dict) and isinstance(gnews_block.get("results"), list) else (
+        gnews_block if isinstance(gnews_block, list) else []
+    )
+    lines = [f"GNEWS · '{query}' ({len(gnews_items)} GNews items, {len(results)} standard)"]
+    for i, it in enumerate(gnews_items[:count], start=1):
+        if not isinstance(it, dict):
+            continue
+        head = f"{i}. {_clean_html(it.get('title')) or '(untitled)'}"
+        age = it.get("age")
+        if age:
+            head += f"  [{age}]"
+        lines.append(head)
+        src = (it.get("meta") or {}).get("source", {}).get("name") if isinstance(it.get("meta"), dict) else None
+        lines.append(f"    {src or ''}  {it.get('url') or ''}".rstrip())
+    if not gnews_items:
+        lines.append("   [no GNews items returned]")
+    return {
+        "query": query,
+        "results": results,
+        "gnews": gnews_block,
+        "n": len(results),
+        "gnews_n": len(gnews_items),
+        "render": "\n".join(lines),
+        "raw": raw,
+    }
+
+
+def suggest(query: str, *, country: Optional[str] = None, timeout: float = 30.0) -> dict:
+    """Return query-suggestion / autocomplete completions for a partial query.
+
+    Mirrors what Brave's search box would suggest next. Useful for query
+    expansion or to disambiguate a vague user query before running a search.
+
+    **Plan-gated:** on a key that lacks the add-on this raises ``BraveError``
+    (category ``plan``), not a request bug.
+
+    Args:
+        query: the partial query to get suggestions for.
+        country: optional 2-letter ISO code to localise suggestions.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        {"query", "suggestions": [str or dict], "n": int, "raw": dict}
+    """
+    params: dict[str, object] = {"q": query}
+    if country:
+        params["country"] = country
+    raw = _request("/res/v1/suggest/search", params, timeout)
+    # Suggestion responses vary by plan; surface whichever list-like field the
+    # API returns.
+    if isinstance(raw, list):
+        suggestions = raw
+    elif isinstance(raw, dict):
+        suggestions = raw.get("suggestions") or raw.get("results") or raw.get("queries") or []
+        if not isinstance(suggestions, list):
+            suggestions = [raw]
+    else:
+        suggestions = []
+    norm = [s if isinstance(s, str) else (s.get("title") or s.get("suggestion") or s.get("query") or s) for s in suggestions]
+    return {"query": query, "suggestions": norm, "n": len(norm), "raw": raw}
+
+
+def spellcheck(query: str, *, timeout: float = 30.0) -> dict:
+    """Return a spell-corrected form of the query (or the original).
+
+    Useful before running a search to avoid a misspelled query that will
+    under-perform. When the API sees no misspelling it returns the original.
+
+    **Plan-gated:** on a key that lacks the add-on this raises ``BraveError``
+    (category ``plan``), not a request bug.
+
+    Args:
+        query: the text to spell-check.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        {"query", "corrected": str|None, "changed": bool, "raw": dict}
+    """
+    raw = _request("/res/v1/spellcheck/search", {"q": query}, timeout)
+    corrected = None
+    if isinstance(raw, str):
+        corrected = raw
+    elif isinstance(raw, dict):
+        for k in ("spellcheck", "corrected", "result", "query"):
+            v = raw.get(k)
+            if isinstance(v, str) and v:
+                corrected = v
+                break
+    changed = bool(corrected and corrected != query)
+    return {"query": query, "corrected": corrected, "changed": changed, "raw": raw}
+
+
+# ---------------------------------------------------------------------------
 # Make every public function work with or without ``await`` (dual sync/async).
 # Internal cross-calls are unaffected -- they receive the same dict/str wrappers
 # and keep working (isinstance / [] / .get() / ** unpack all still hold).
+# Wrapped only after ``__all__`` is defined so imported helpers keep their
+# original, non-wrapped identity.
 # ---------------------------------------------------------------------------
-_apply_async_to(globals())
 
 __all__ = [
     "BraveError",
@@ -7236,10 +7424,12 @@ __all__ = [
     "explain",
     "find_files",
     "forums",
+    "gnews",
     "github_issues",
     "github_repos",
     "headlines",
     "infobox",
+    "llm_context",
     "locations",
     "merge",
     "modes",
@@ -7274,9 +7464,11 @@ __all__ = [
     "search_worker",
     "software",
     "stack_trace",
+    "spellcheck",
     "stock_quote",
     "structured",
     "summarize_page",
+    "suggest",
     "thumbnails",
     "trending_libs",
     "trending_topics",
@@ -7292,3 +7484,5 @@ __all__ = [
     "PATHS",
     "SAFE_SEARCH"
 ]
+
+_apply_async_to(globals(), public=__all__)

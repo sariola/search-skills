@@ -1,0 +1,281 @@
+[
+ {
+  "src": "section:brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_H",
+  "line": 1044,
+  "severity": "critical",
+  "category": "swallowed-error-cascade-crash",
+  "description": "_run_fallback (line 1059) returns None for ANY failure of the fallback endpoint (connection error, non-200, non-JSON), and _request returns that None at line 1044 as if it were a successful payload. The sole caller _search_full (line 2010) immediately executes `diag = _query_diag(data)` and `data.get(...)` with data=None, raising AttributeError: 'NoneType' object has no attribute 'get' at line 2011. Trigger: mode='local' with a key lacking local support that returns a retryable status (429/5xx/404) on the local endpoint while the web fallback GET also fails. The docs promise 'Local mode can fall back to web search; inspect `fallback`' (references/api.md line 96) \u2014 instead the whole search crashes.",
+  "suggestion": "In _request, when `fallback` is set and `_run_fallback` returns None, raise the original classified error (`error`) instead of returning None.",
+  "_id": 0
+ },
+ {
+  "src": "section:brave:brave-item-normalizers",
+  "line": 1779,
+  "severity": "high",
+  "category": "wrong-data",
+  "description": "_summarizer fallback path builds a malformed deep link: 'https://search.brave.com/summarizer?key=' + _up.urlencode({'key': key}) produces '...summarizer?key=key=%3C...%3E' (the literal 'key=' prefix is doubled because urlencode already emits the key name). The success path at line 1776 correctly uses '?' + urlencode without the hardcoded 'key='. Any string key that fails json.loads (or parses to a non-dict, e.g. a string, triggering AttributeError at line 1769) hits this branch and yields a broken link.",
+  "suggestion": "Use the same construction as line 1776: 'https://search.brave.com/summarizer?' + _up.urlencode({'key': key})",
+  "_id": 1
+ },
+ {
+  "src": "section:brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_H",
+  "line": 1015,
+  "severity": "high",
+  "category": "dead-branch-contract-drift",
+  "description": "`if isinstance(data, dict) or data is not None:` is a tautology equivalent to `if data is not None:` (a dict is never None). So the intended '200-but-unparseable is a server-side oddity; treat as transient' path (lines 1017-1025) is unreachable: resp.json() that parses to None (literal 'null'), a bare JSON string, number, or list is returned as the payload. Any downstream `data.get(...)` (e.g. _query_diag at line 1716) then crashes with AttributeError/TypeError on a non-dict 'successful' response.",
+  "suggestion": "Use `if isinstance(data, dict):` so non-dict/None 200 bodies fall through to the retry/raise path as the comment intends.",
+  "_id": 2
+ },
+ {
+  "src": "section:brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_H",
+  "line": 1041,
+  "severity": "high",
+  "category": "operator-precedence",
+  "description": "`if fallback and resp.status_code != 200 and (retryable or not fast_fail and fallback is not None):` \u2014 `and` binds tighter than `or`, so the condition is `... and (retryable or ((not fast_fail) and (fallback is not None)))`. `fallback is not None` is always true here (first clause of the chain), making the inner `and` dead; and a fast-fail status that is also retryable (e.g. a 429 body tagged component=authentication) silently takes the fallback, inverting the 'definitive errors are not retried/fallen-back' contract stated in the docstring (lines 975-976).",
+  "suggestion": "Explicitly parenthesise: `if fallback and resp.status_code != 200 and (retryable or not fast_fail):` and drop the redundant `fallback is not None` (and possibly the _fallback_ok stub).",
+  "_id": 3
+ },
+ {
+  "src": "section:exa:exa-imports-events-research",
+  "line": 4453,
+  "severity": "high",
+  "category": "contract-drift / silently-wrong-data",
+  "description": "In the default call (max_age_hours=None), `fetch([result_r.url], max_characters=text_cap, include_sections=[\"body\"], text_verbosity=\"standard\", max_age_hours=None)` hits fetch()'s backward-compat single-URL string branch (fetch lines 1823-1832: condition `len(results)==1 and mode==\"text\" and not(with_highlights or with_summary) and not extras_links and max_age_hours is None` is all True, and it does not account for include_sections/text_verbosity). So `body` is a `str`, not a list. The `isinstance(body, list)` check at line 4456 is then False, so website_url/website_title/website_text are NEVER added, and no website_error is set either. The docstring promises these fields on a successful fetch_website, but the normal success path returns a dict without them.",
+  "suggestion": "Pass include_meta=True (fetch then returns an envelope with 'results'), or force a non-None max_age_hours, or make fetch() treat include_sections/text_verbosity as 'rich options' that disable the string form. Then read body['results'][0]['text'].",
+  "_id": 4
+ },
+ {
+  "src": "section:exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5812,
+  "severity": "high",
+  "category": "wrong-results",
+  "description": "The deprecation gate regex r\"\\b(deprecat|obsolete|removed|migrat|breaking|sunset)\\b\" (also 5800, and the shaded copies 5550/5554/5567) requires a word boundary on BOTH sides of each stem. Since 'deprecat', 'remov', 'migrat' are stems, not whole words, \\bdeprecat\\b only matches the literal non-word 'deprecat'. Verified: it fails to match 'deprecated', 'deprecation', 'deprecating', 'removed', 'removal', 'migration', 'migrating' \u2014 i.e. the actual deprecation vocabulary \u2014 while only catching whole words 'obsolete', 'removed', 'breaking', 'sunset', 'end of life'. _dep_type() (substring, no \\b) would classify 'deprecated' fine, but items never reach it because this gate rejects them first. Net effect: deprecations() returns near-empty signals/counts for its primary use case.",
+  "suggestion": "Drop the trailing \\b (keep leading \\b only) or use substring matching: r\"\\b(deprecat|obsolet|end[- ]of[- ]life|remov|migrat|breaking|sunset)\" so stems match as prefixes.",
+  "_id": 5
+ },
+ {
+  "src": "section:exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, e",
+  "line": 475,
+  "severity": "high",
+  "category": "stale-cache / wrong recovery path",
+  "description": "_get_api_key returns _API_KEY_CACHE[label] before ever re-reading the environment. Once a key has been resolved, a corrected EXA_API_KEY re-exported in the same long-lived process (exactly the recovery the ExaAuthError message on line 528 tells the user to do: 'export a fresh EXA_API_KEY') is ignored and the stale key keeps producing 401s forever. There is no cache-invalidation or re-check path anywhere in the module.",
+  "suggestion": "Prefer the live environment variable over the cache (cache only file-derived keys, or re-run _seek_api_key when os.environ.get(_API_KEY_NAMES[0]) differs from the cached value).",
+  "_id": 6
+ },
+ {
+  "src": "section:brave:brave-verticals-b",
+  "line": 3481,
+  "severity": "high",
+  "category": "unused-parameter",
+  "description": "The `now` parameter (documented in the docstring as an optional datetime override, 'mostly for tests') is silently ignored. Line 3481 reassigns `now = datetime.now(tz) if tz else datetime.now()`, shadowing the caller-supplied value. Any test or caller passing `now=some_datetime` gets the current time instead, making the override a no-op.",
+  "suggestion": "Replace line 3481 with: `if now is None: now = datetime.now(tz) if tz else datetime.now()` so the parameter is honoured when provided.",
+  "_id": 7
+ },
+ {
+  "src": "section:brave:brave-search-core",
+  "line": 2345,
+  "severity": "high",
+  "category": "contract-drift",
+  "description": "research() emits the key 'summary_dead_link' but its docstring (line 2265) and the summarizer machinery (deep_link built in _summarizer, line 1776) promise 'summary_deep_link'. 'dead' is a typo of 'deep', so the summarizer deep-link is unreachable under its documented name and any caller doing result['summary_deep_link'] gets KeyError.",
+  "suggestion": "Rename the returned key at line 2345 to 'summary_deep_link'.",
+  "_id": 8
+ },
+ {
+  "src": "section:exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/",
+  "line": 3555,
+  "severity": "low",
+  "category": "unbounded loop / growth",
+  "description": "webset_items_all uses a 'while True' that keeps appending to 'items' and advancing cursor until hasMore is false. There is no duplicate-page / progress guard: if the API ever repeats a cursor or keeps hasMore true, the loop is infinite and the list grows without bound. Same class of risk applies to webset_snapshot which holds the full list in memory.",
+  "suggestion": "Add a safety bound (max pages, or stop when a nextCursor repeats) to prevent infinite pagination.",
+  "_id": 9
+ },
+ {
+  "src": "section:exa (exa/src/exa/__init__.py):exa-param-search",
+  "line": 1301,
+  "severity": "medium",
+  "category": "inconsistent-error-classification",
+  "description": "_mode_args raises a plain ValueError for an unknown mode, while every other validation in this section (and the module) raises ExaError. The ExaError docstring explicitly covers 'an invalid option combo is given', so a caller doing `except ExaError` around search()/run() will NOT catch a bad mode and will get an unhandled ValueError instead.",
+  "suggestion": "Raise ExaError (or a dedicated subclass) for unknown mode to match the rest of the module.",
+  "_id": 10
+ },
+ {
+  "src": "section:exa:exa-fetch-answer",
+  "line": 1939,
+  "severity": "medium",
+  "category": "wrong-return-shape",
+  "description": "answer() accepts and forwards an undocumented `stream` parameter (declared line 1900, not in the Args docstring) into body[\"stream\"] (line 1939), but routes through _request() which does resp.json(). When stream=True the /answer endpoint returns an SSE stream (as stream_answer at line 2642 confirms by posting stream=True and parsing SSE lines), so resp.json() raises an uncaught httpx/JSON decode error instead of returning an Answer. Passing stream=True to answer() crashes with an obscure error; the documented streaming path is stream_answer().",
+  "suggestion": "Either document/validate stream (raise a clear error directing the user to stream_answer when stream=True) or parse the SSE stream; simplest is to reject stream=True with an ExaError pointing to stream_answer().",
+  "_id": 11
+ },
+ {
+  "src": "section:exa:exa-fetch-answer",
+  "line": 1824,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "The legacy string-form guard checks only `not extras_links and max_age_hours is None` (line 1824), ignoring the other rich extras (extras_image_links, extras_rich_links, extras_rich_image_links, extras_code_blocks) and other rich options (text_verbosity, subpages, include_sections, highlights_max_characters). So a single-URL text fetch such as fetch(urls=[u], extras_code_blocks=5) still returns the plain '--- Title ---\\n<body>' string and silently discards the requested structured extras, contradicting the docstring promise that the string form is used only 'when no rich options are requested'.",
+  "suggestion": "Make the guard cover all rich options (any extras_*, text_verbosity, subpages>0, subpage_target, include_sections, etc.) so the structured list is returned whenever a rich option is actually requested.",
+  "_id": 12
+ },
+ {
+  "src": "section:exa:exa-fetch-answer",
+  "line": 1854,
+  "severity": "medium",
+  "category": "none-handling",
+  "description": "Answer.__init__ sets self.citations = raw.get(\"citations\", []) (line 1854). If the /answer API returns the key with a null value (\"citations\": null) the default is not applied, so citations becomes None; Answer.sources (line 1860), to_dict (line 1866), to_markdown (line 1879) and __repr__ (line 1891) then raise TypeError ('NoneType' not iterable / not a len()). The sibling stream_answer defensively normalizes with `obj.get(\"citations\") or []` (line 2672), confirming empty/absent citations is a real response shape, so Answer should use the same guard.",
+  "suggestion": "Use self.citations = raw.get(\"citations\") or [] to mirror stream_answer and avoid the None crash.",
+  "_id": 13
+ },
+ {
+  "src": "section:exa:exa-agent-runs (lines 1946-2610)",
+  "line": 2406,
+  "severity": "medium",
+  "category": "inconsistent error handling",
+  "description": "agent() early-returns a terminal run created already terminal (`if run.done: return run`) without running the `raise_on_failed` check at line 2425. If POST /agent/runs returns a run that is already `failed` (rare per the comment, but e.g. an instantly-failing continuation), the default `raise_on_failed=True` contract documented in the docstring (lines 2368-2369, 2375-2377) is violated: a failed AgentRun is silently returned instead of raising ExaError, unlike the poll path which does raise.",
+  "suggestion": "Move/apply the `if raise_on_failed and run.status == \"failed\": raise` check after the early return as well (check both the pre-poll and post-poll run objects).",
+  "_id": 14
+ },
+ {
+  "src": "section:exa:exa-agent-runs (lines 1946-2610)",
+  "line": 2409,
+  "severity": "medium",
+  "category": "contract drift / wrong default",
+  "description": "The docstring says `timeout` is the 'Max total wall-clock seconds to wait for completion' (line 2366), but `deadline = time.time() + timeout` is computed AFTER the create call at line 2404, which itself runs with `timeout=min(timeout, 30)`; each in-flight poll GET at line 2412 also carries `timeout=min(timeout, 45)`. Total elapsed wall-clock can therefore exceed `timeout` by up to ~30s (create) + up to ~45s (one in-flight poll) for default timeout=120, and for small timeouts (e.g. timeout=10) the actual wait can be roughly double the promised bound.",
+  "suggestion": "Subtract elapsed time from the create call before computing the deadline (e.g. record t0 before POST and use `deadline = t0 + timeout`), and/or cap the per-poll request timeout by remaining time.",
+  "_id": 15
+ },
+ {
+  "src": "section:exa:exa-result-entities (lines 554-1260: Result + enti",
+  "line": 1024,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "top_terms() docstring (lines 1007-1008) promises domain_clusters entries shaped {\"domain\",\"results\"} but the actual key returned is \"count\" ({\"domain\": d, \"count\": c}). Downstream code or skill instructions following the documented shape get KeyError on 'results'.",
+  "suggestion": "Either rename the returned key to 'results' or fix the docstring to 'count'.",
+  "_id": 16
+ },
+ {
+  "src": "section:exa:exa-result-entities (lines 554-1260: Result + enti",
+  "line": 826,
+  "severity": "medium",
+  "category": "dead-parameter",
+  "description": "entity_search() accepts dedupe: bool = True but never reads it; deduplication always happens, so dedupe=False still dedupes - a silent contract violation for callers who pass it.",
+  "suggestion": "Honor dedupe=False (skip roster dedup, keep all records) or drop the parameter.",
+  "_id": 17
+ },
+ {
+  "src": "section:exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 2998,
+  "severity": "medium",
+  "category": "dead-parameter/contract-drift",
+  "description": "monitor_create's `timeout=45.0` keyword is accepted (line 2934) but never used; the request hardcodes timeout=30. A caller passing timeout=120 gets a 30s request that can raise httpx.TimeoutException earlier than requested, and the default is also not the documented 45s.",
+  "suggestion": "Pass timeout=timeout to _request (or drop the parameter).",
+  "_id": 18
+ },
+ {
+  "src": "section:exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3113,
+  "severity": "medium",
+  "category": "return-shape/doc-drift",
+  "description": "monitor_check docstring promises a dict with 'latest_run' (and references nonexistent parameter 'auto_if_empty' at line 3114); the actual returns are {monitor_id, has_run, run_id, run_output, triggered} with no 'latest_run' key in either branch (lines 3123-3129, 3135-3141). Callers keying off documented fields get KeyError/None.",
+  "suggestion": "Add 'latest_run' (the full run dict) to both return dicts or fix the docstring; rename auto_if_empty to trigger_if_empty.",
+  "_id": 19
+ },
+ {
+  "src": "section:exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3122,
+  "severity": "medium",
+  "category": "logic/doc-deviation",
+  "description": "monitor_check triggers a new run whenever runs_data[0] has no output, even when an older completed run with output exists, and even while a run is in progress. Docstring (line 3103) and jobs.md say it should only trigger when the monitor has NO completed run, so e.g. runs=[running, completed-with-output] triggers a duplicate/paid run contrary to documented semantics.",
+  "suggestion": "Scan the fetched runs for a completed run with output first; only trigger if none exists (and ideally skip if latest is still 'running').",
+  "_id": 20
+ },
+ {
+  "src": "section:exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/",
+  "line": 3697,
+  "severity": "medium",
+  "category": "return-shape / contract drift",
+  "description": "webset_eval_review's docstring (lines 3668-3669) promises keys 'item_count' and 'by_satisfied', but the actual return (lines 3697-3698) uses 'count' and 'by_satisfaction'. Any caller following the documented shape gets KeyError on result['item_count'] or result['by_satisfied'].",
+  "suggestion": "Rename the returned keys to match the docstring (item_count, by_satisfied) or update the docstring to 'count'/'by_satisfaction'.",
+  "_id": 21
+ },
+ {
+  "src": "section:exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5459,
+  "severity": "medium",
+  "category": "dead-code-shadowing",
+  "description": "Five functions are defined twice in this range; the first definition of each is shadowed and never executed at runtime (module dict keeps the last binding). Pairs: pkg_releases 5459->5705, _dep_type 5507->5753, deprecations 5522->5768, snippet 5581->5826, code_lint_tips 5672->5870. The 5459/5507/5522/5581/5672 copies (plus the duplicated banner comment at 5450-5456 and 5696-5702) are dead. This is ~200 lines of duplicated code and a maintenance hazard (any future edit must be applied to two places).",
+  "suggestion": "Delete the first (shaded) copies at 5459, 5507, 5522, 5581, 5672 and the duplicate banner comment at 5450-5456, keeping only the effective 5705/5753/5768/5826/5870 block and the single banner.",
+  "_id": 22
+ },
+ {
+  "src": "section:exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, e",
+  "line": 479,
+  "severity": "medium",
+  "category": "error-class contract drift",
+  "description": "Missing key raises a bare RuntimeError, but the ExaAuthError docstring (lines 382-383) says it covers 'the API key is missing, invalid, or revoked' and references/usage.md tells users to catch ExaAuthError for auth problems. Callers following the docs and catching ExaAuthError will miss the missing-key case entirely.",
+  "suggestion": "Raise ExaAuthError (or document RuntimeError explicitly) for the not-configured case so the documented catch set works.",
+  "_id": 23
+ },
+ {
+  "src": "section:exa/__init__.py:exa-streaming",
+  "line": 2624,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "stream_answer's docstring documents the trailing meta dict as \"cost_dollars\": {...} (an object), and the rest of the module treats cost as a dict (e.g. costDollars.total, SearchResults.total_cost). But the code (line 2675) collapses it to the scalar float (obj.get('costDollars') or {}).get('total'), so the yielded dict actually carries cost_dollars as a float/None.",
+  "suggestion": "Either emit the raw costDollars dict to match the doc/module convention, or fix the docstring example to show a scalar; a caller that does meta['cost_dollars']['total'] per the documented shape raises TypeError/AttributeError.",
+  "_id": 24
+ },
+ {
+  "src": "section:brave:brave-verticals-b",
+  "line": 3819,
+  "severity": "medium",
+  "category": "typo-missing-field",
+  "description": "`d.get(\"pronounciation\")` uses a misspelled key. If the Brave API returns the correctly-spelled key `\"pronunciation\"`, the `pronunciation` field in the normalised output will always be None. The docstring for `_rich_definitions` lists `pronunciation` as a returned field.",
+  "suggestion": "Change to `d.get(\"pronunciation\")` (or use a fallback: `d.get(\"pronunciation\") or d.get(\"pronounciation\")`) after verifying the actual API response key.",
+  "_id": 25
+ },
+ {
+  "src": "section:brave (brave/src/brave/__init__.py):brave-rich-local (lines 4061-4600)",
+  "line": 4086,
+  "severity": "medium",
+  "category": "contract-drift/return-shape",
+  "description": "rich() docstring (lines 4073-4074) promises the package always contains \"render\" and \"raw\", but the early-return path at lines 4085-4087 (no callback_key, or fetch=False) omits both keys. SKILL.md/verticals.md say no-hint is a normal outcome, so consumers doing out[\"raw\"] or out[\"render\"] on a hintless query raise KeyError. Two return shapes for one function.",
+  "suggestion": "Always include \"render\" (empty string) and \"raw\" ({}) in the early return, or document that the keys are absent on the hint-only path.",
+  "_id": 26
+ },
+ {
+  "src": "section:brave (brave/src/brave/__init__.py):brave-rich-local (lines 4061-4600)",
+  "line": 4224,
+  "severity": "medium",
+  "category": "wrong-results/contract-drift",
+  "description": "The typed helpers weather/stock_quote/crypto/definition/currency_x/convert_values (lines 4220-4251) blindly return rich() output without checking that the hint's vertical actually matches the requested subtype. Their docstrings promise results[0][\"data\"] is the specific normalised block, but if the hint maps to a different vertical (e.g. stock_quote(\"apple\") returning a definitions vertical) or returns no hint at all, callers silently get wrong-vertical or empty data with no warning.",
+  "suggestion": "In each helper, compare result[\"vertical\"] (or results[0][\"subtype\"]) to the expected subtype and either return a flagged/empty package or at least note the mismatch.",
+  "_id": 27
+ },
+ {
+  "src": "section:brave (src/brave/__init__.py):brave-verticals-a (lines 2351-3390): software, nea",
+  "line": 3224,
+  "severity": "medium",
+  "category": "wrong-data / dead-heuristic",
+  "description": "In drinks(), `dom = (r.get(\"domain\") or \"\").lower()` reads a `domain` key off the web result item `r`. Web items are normalized by _web_item (line 1283) which has NO `domain` key (its site field is `site`), so r.get(\"domain\") is always None and dom is always \"\". The domain-based drink heuristic `any(s in dom for s in (\"liquor\",\"cocktail\",\"drink\",\"wine\"))` therefore never fires, contrary to the documented intent (docstring lines 3201-3203: \"whose title/domain signals a cocktail\"). Drink recipes that would otherwise be caught via their source host are silently dropped, yielding an under-sized results set.",
+  "suggestion": "Use the web item's site host `r.get(\"site\")` (or the recipe block's domain `rc.get(\"domain\")` if that is what was meant) instead of the nonexistent `r.get(\"domain\")`.",
+  "_id": 28
+ },
+ {
+  "src": "section:brave (src/brave/__init__.py):brave-verticals-a (lines 2351-3390): software, nea",
+  "line": 2419,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "software()'s docstring (line 2381) documents the return key as `\"registries\":{pypi->[names], npm->[names]}`, but the actual returned dict uses the key `\"registry\"` (line 2419). A caller following the documented contract does res[\"registries\"] and gets KeyError. Relatedly, the docstring says `versions` is `[version str...]` while the code returns a list of dicts {name,version,url,code} (line 2398).",
+  "suggestion": "Rename the returned key to `registries` to match the docstring, or correct the docstring to `registry`; also fix the `versions` doc description to list-of-dicts.",
+  "_id": 29
+ },
+ {
+  "src": "section:brave:brave-search-core",
+  "line": 2349,
+  "severity": "medium",
+  "category": "wrong-value",
+  "description": "research() computes 'duplicates' as sum(p['n'] for p in per_search if p['n']) - len(out_items). Each per-query 'n' equals the count of items actually appended to out_items for that query, so the sum always equals len(out_items) and 'duplicates' is always 0. It never reflects the URLs actually dropped during cross-query dedup (the value the docstring 'duplicates: int' implies).",
+  "suggestion": "Track the raw pre-dedup count per query and subtract the kept count, or compute duplicates from a seen-set hit counter rather than the appended count.",
+  "_id": 30
+ }
+]

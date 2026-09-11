@@ -1,0 +1,161 @@
+{
+  "elapsed_s": 24.6,
+  "pass": 25,
+  "fail": 0,
+  "results": [
+    {
+      "name": "exa.team_info",
+      "status": "ok",
+      "plan": null,
+      "has_email": false
+    },
+    {
+      "name": "exa.search",
+      "status": "ok",
+      "n": 3,
+      "request_id": "f40a8c9db1eab14a6e96f2585e00ce6d",
+      "cost": 0.015,
+      "first_title": ""
+    },
+    {
+      "name": "exa.search(bad-mode-rejected)",
+      "status": "ok"
+    },
+    {
+      "name": "exa.fetch(string-shape)",
+      "status": "ok",
+      "is_str": true,
+      "has_id": "n/a"
+    },
+    {
+      "name": "exa.fetch(list-shape)",
+      "status": "ok",
+      "is_list": true,
+      "n": 1
+    },
+    {
+      "name": "exa.answer",
+      "status": "ok",
+      "answer_len": 166,
+      "n_citations": 8,
+      "cost": {
+        "total": 0.005
+      }
+    },
+    {
+      "name": "exa.find_similar",
+      "status": "ok",
+      "n": 2
+    },
+    {
+      "name": "exa.agent",
+      "status": "completed",
+      "id": "agent_run_440fce589b534f328a26030d0b8e8f67",
+      "text": "Four",
+      "structured": null
+    },
+    {
+      "name": "exa.agent_stop(expected-error-on-terminal)",
+      "status": "ok",
+      "id": "agent_run_05146accc16e4d24ada0fc3524cbc3b5",
+      "err": "ExaBadRequestError"
+    },
+    {
+      "name": "exa.batch(plan-gated-clean-error)",
+      "status": "ok",
+      "err": "ExaPlanError"
+    },
+    {
+      "name": "exa.batch_list(plan-gated-clean-error)",
+      "status": "ok"
+    },
+    {
+      "name": "exa.monitor_list",
+      "status": "ok",
+      "n": 0
+    },
+    {
+      "name": "exa.webset_list",
+      "status": "ok",
+      "n": 0
+    },
+    {
+      "name": "exa.entity_search",
+      "status": "ok",
+      "entity_count": 3,
+      "category": "company"
+    },
+    {
+      "name": "exa.top_terms",
+      "status": "ok",
+      "terms": 0
+    },
+    {
+      "name": "brave.search",
+      "status": "ok",
+      "n": null,
+      "first": "r/Clojure on Reddit: what web framework do you use?"
+    },
+    {
+      "name": "brave.search(news)",
+      "status": "ok",
+      "n": null
+    },
+    {
+      "name": "brave.paged",
+      "status": "ok",
+      "n": 10,
+      "pages": 2,
+      "exhausted": false
+    },
+    {
+      "name": "brave.merge",
+      "status": "ok",
+      "merged": 6,
+      "tagged_all": true
+    },
+    {
+      "name": "brave.place_search",
+      "status": "ok",
+      "n": 3,
+      "resolved": "San Francisco"
+    },
+    {
+      "name": "brave.rich(weather)",
+      "status": "ok",
+      "vertical": "weather",
+      "n": 1
+    },
+    {
+      "name": "brave.weather",
+      "status": "ok",
+      "has_current": false
+    },
+    {
+      "name": "brave.stock_quote",
+      "status": "ok",
+      "has_symbol": true
+    },
+    {
+      "name": "brave.probe",
+      "status": 200,
+      "title": "Example Domain",
+      "chars": 131
+    },
+    {
+      "name": "brave.summarize_page",
+      "status": "ok",
+      "n_points": 1
+    },
+    {
+      "name": "brave.convert_values",
+      "status": "ok",
+      "result": "{'type': 'rich', 'query': 'convert 100 USD to EUR', 'hint': "
+    },
+    {
+      "name": "brave.structured",
+      "status": "ok",
+      "has_data": false
+    }
+  ]
+}

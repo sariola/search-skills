@@ -20,30 +20,55 @@ import httpx
 # ---------------------------------------------------------------------------
 # Clean engine: one client, one worker channel, deadline polls (no fixed sleep).
 # ---------------------------------------------------------------------------
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 
 _ENGINE_LIMITS = httpx.Limits(max_connections=16, max_keepalive_connections=8)
+# Hard ceiling on parallel in-flight = the keep-alive connection pool. A worker
+# beyond this would only block on a connection, so it buys nothing.
+_POOL_MAX = _ENGINE_LIMITS.max_connections
 _CLIENT = None
 _WORKERS = None
+_CLIENT_LOCK = threading.Lock()
+_WORKERS_LOCK = threading.Lock()
+# Set on a pool worker while it runs a _fanout thunk. A _fanout called *from*
+# such a worker (a nested fan-out) must NOT submit-and-block on the shared
+# pool, or it deadlocks the pool that its own outer worker is parked on.
+_IN_FANOUT = threading.local()
 
 
 def _http() -> "httpx.Client":
-    """Process-lifetime client. Keep-alive pool; thread-safe for request()."""
+    """Process-lifetime client. Keep-alive pool; thread-safe for request().
+
+    Double-checked under a lock so concurrent first-use constructs exactly one
+    Client (a leaked second Client would hold an unclosed socket pool).
+    """
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = httpx.Client(
-            limits=_ENGINE_LIMITS,
-            follow_redirects=True,
-            headers={"Accept": "application/json"},
-        )
+        with _CLIENT_LOCK:
+            if _CLIENT is None:
+                _CLIENT = httpx.Client(
+                    limits=_ENGINE_LIMITS,
+                    follow_redirects=True,
+                    headers={"Accept": "application/json"},
+                )
     return _CLIENT
 
 
-def _pool(n: int = 8) -> ThreadPoolExecutor:
+def _pool() -> ThreadPoolExecutor:
+    """Process-lifetime worker pool sized to the connection ceiling.
+
+    A single shared pool is created under a lock (avoids a second, never-shut-
+    down pool on concurrent first use). Per-call parallelism is bounded
+    separately in ``_fanout`` — do NOT grow this pool per call.
+    """
     global _WORKERS
     if _WORKERS is None:
-        _WORKERS = ThreadPoolExecutor(max_workers=n, thread_name_prefix="exa")
+        with _WORKERS_LOCK:
+            if _WORKERS is None:
+                _WORKERS = ThreadPoolExecutor(
+                    max_workers=_POOL_MAX, thread_name_prefix="exa")
     return _WORKERS
 
 
@@ -65,11 +90,51 @@ def _retry_after_seconds(resp, fallback: float) -> float:
 
 
 def _fanout(jobs, *, concurrency: int = 8):
-    """One-way: submit all (key, thunk), collect in order. No shared dict."""
+    """One-way fan-out: submit all (key, thunk) against the shared pool, collect
+    in order. No shared mutable dict; each job's exception is isolated into
+    ``(key, False, exc)``.
+
+    ``concurrency`` bounds how many jobs run in parallel (default 8, capped at
+    the keep-alive connection pool so extra workers can only queue on a
+    connection). All jobs are submitted up front, so a slow job never blocks
+    the others from starting; the semaphore throttles execution, not submission.
+
+    A fan-out that is itself running on a pool worker (a *nested* fan-out, e.g.
+    ``deep_research`` -> ``search`` -> a per-endpoint fan-out) runs its jobs
+    **inline** in the current thread rather than submitting to the shared pool:
+    submitting to the same pool this worker is parked on and then blocking on
+    those futures deadlocks once the pool is saturated by its siblings. Inline
+    execution keeps real concurrency at or below the connection ceiling (the
+    parent fan-out's workers already provide the parallelism) and avoids a
+    worker spawning sub-pools.
+    """
     if not jobs:
         return []
-    pool = _pool(max(8, int(concurrency or 8)))
-    futs = [(key, pool.submit(thunk)) for key, thunk in jobs]
+    if bool(getattr(_IN_FANOUT, "value", False)):
+        # Nested: run inline (no new threads). In-order, per-job exception
+        # isolation preserved; we simply don't re-parallelize inside a worker.
+        out = []
+        for key, thunk in jobs:
+            try:
+                out.append((key, True, thunk()))
+            except Exception as e:
+                out.append((key, False, e))
+        return out
+
+    n = max(1, min(int(concurrency or 8), _POOL_MAX))
+    pool = _pool()
+    sem = threading.Semaphore(n)
+
+    def _run_thunk(thunk):
+        prev = getattr(_IN_FANOUT, "value", False)
+        _IN_FANOUT.value = True
+        try:
+            with sem:
+                return thunk()
+        finally:
+            _IN_FANOUT.value = prev
+
+    futs = [(key, pool.submit(_run_thunk, thunk)) for key, thunk in jobs]
     out = []
     for key, fut in futs:
         try:
@@ -100,8 +165,6 @@ def _poll_until(check, *, deadline: float, initial: float = 0.25, cap: float = 4
         delay = min(delay * 1.6, cap)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Dual sync / async support (await works on any function-backed result)
 # ---------------------------------------------------------------------------
@@ -126,217 +189,25 @@ def _poll_until(check, *, deadline: float, initial: float = 0.25, cap: float = 4
 # so their cross-calls transparently receive the same dict / generic wrappers
 # and keep working unmodified. Nothing here changes the wire behaviour.
 # ---------------------------------------------------------------------------
-import functools as _functools
-import types as _types
-
-
-def _identity_await(self):
-    """__await__ for result classes: awaiting yields the instance itself."""
-    if False:  # pragma: no cover - makes this a generator (required by await)
-        yield
-    return self
-
-
-class _AsyncDict(dict):
-    """A dict that is also awaitable; ``await x`` yields a plain ``dict``."""
-    __slots__ = ()
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return dict(self)
-
-
-class _AsyncStr(str):
-    """A str that is also awaitable; ``await x`` yields the plain ``str``."""
-    __slots__ = ()
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return str(self)
-
-
-class _AsyncList(list):
-    """A list that is also awaitable; ``await x`` yields a plain ``list``."""
-    __slots__ = ()
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return list(self)
-
-
-class _AsyncInt(int):
-    """An int that is also awaitable; ``await x`` yields a plain ``int``."""
-    __slots__ = ()
-
-    def __new__(cls, v):
-        return int.__new__(cls, int(v))
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return int(self)
-
-
-class _AsyncFloat(float):
-    """A float that is also awaitable; ``await x`` yields a plain ``float``."""
-    __slots__ = ()
-
-    def __new__(cls, v):
-        return float.__new__(cls, float(v))
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return float(self)
-
-
-class _AsyncBool(int):
-    """A bool that is also awaitable; ``await x`` yields a plain ``bool``."""
-    __slots__ = ()
-
-    def __new__(cls, v):
-        return int.__new__(cls, bool(v))
-
-
-    def __str__(self):
-        return str(bool(self))
-
-    def __repr__(self):
-        return repr(bool(self))
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return bool(self)
-
-
-def _wrap_result(value):
-    """Return a value that works both with and without ``await``."""
-    if isinstance(value, dict):
-        return _AsyncDict(value)
-    if isinstance(value, str):
-        return _AsyncStr(value)
-    if isinstance(value, list):
-        return _AsyncList(value)
-    if isinstance(value, bool):
-        return _AsyncBool(value)
-    if isinstance(value, int):
-        return _AsyncInt(value)
-    if isinstance(value, float):
-        return _AsyncFloat(value)
-    # Any object that already knows how to be awaited (our own result classes,
-    # or a swallowed coroutine) is returned untouched.
-    if hasattr(value, "__await__"):
-        return value
-    # Fallback generic proxy for anything else (incl. None).
-    return _AsyncScalar(value)
-
-
-class _AsyncScalar(object):
-    """Awaitable + mostly-transparent wrapper for any other type (incl. None)."""
-
-    __slots__ = ("_v",)
-
-    def __init__(self, v):
-        object.__setattr__(self, "_v", v)
-
-    def __await__(self):
-        if False:  # pragma: no cover
-            yield
-        return self._v
-
-    def __getattr__(self, name):
-        return getattr(self._v, name)
-
-    def __getitem__(self, k):
-        return self._v[k]
-
-    def __setitem__(self, k, val):
-        self._v[k] = val
-
-    def __iter__(self):
-        return iter(self._v)
-
-    def __contains__(self, item):
-        return item in self._v
-
-    def __len__(self):
-        return len(self._v)
-
-    def __bool__(self):
-        return bool(self._v)
-
-    def __str__(self):
-        return str(self._v)
-
-    def __repr__(self):
-        return repr(self._v)
-
-    def __float__(self):
-        return float(self._v)
-
-    def __int__(self):
-        return int(self._v)
-
-    def __eq__(self, o):
-        return self._v == o
-
-    def __ne__(self, o):
-        return self._v != o
-
-    def __hash__(self):
-        return hash(self._v)
-
-    def __call__(self, *a, **k):
-        return self._v(*a, **k)
-
-    def __format__(self, spec):
-        return format(self._v, spec)
-
-
-def _make_async(fn):
-    """Wrap a sync public function so calls work with or without ``await``."""
-    import functools
-
-    @functools.wraps(fn)
-    def _async_aware(*args, **kwargs):
-        return _wrap_result(fn(*args, **kwargs))
-
-    return _async_aware
-
-
-def _apply_async_to(module_dict):
-    """Replace every public function with an async-aware twin.
-
-    Private helpers (leading `_`), classes, and inherently asynchronous /
-    streaming callables are untouched:
-
-      * generator functions (``yield`` in the body, e.g. ``stream_answer`` /
-        ``stream_search``) keep their line-by-line streaming behaviour;
-      * already ``async def`` coroutines / async generators are left alone.
-
-    ``functools.wraps`` preserves each wrapped function's name/docstring/signature.
-    """
-    import inspect as _inspect
-    for _name, _obj in list(module_dict.items()):
-        if _name.startswith("_"):
-            continue
-        if not isinstance(_obj, _types.FunctionType):
-            continue
-        if getattr(_obj, "__name__", "") == "_async_aware":
-            continue
-        if _inspect.isgeneratorfunction(_obj) or _inspect.isasyncgenfunction(_obj) \
-           or _inspect.iscoroutinefunction(_obj):
-            continue
-        module_dict[_name] = _make_async(_obj)
+from ._async import (
+    _identity_await, _wrap_result, _make_async, _apply_async_to,
+    _AsyncDict, _AsyncStr, _AsyncList, _AsyncInt, _AsyncFloat, _AsyncBool,
+    _AsyncScalar, _functools as _functools, _types as _types,
+)
 
 
 DEFAULT_API_URL = "https://api.exa.ai"
 WEBSETS_API_URL = "https://api.exa.ai/websets"   # WebSets / imports / webhooks / events / team
 __version__ = "0.19.0"
+
+# Beta feature headers (Exa-Beta) the API requires for opt-in features.
+#   * agent-max-effort-...  → POST /agent/runs/{id}/stop only (graceful stop is
+#     supported solely for effort=max runs; every other agent endpoint is fine
+#     without a beta header).
+#   * batches-...           → every /batches* endpoint (create/get/list/
+#     cancel/delete). Omitting it 403s even on plans that enable /batches.
+AGENT_STOP_BETA_HEADER = "agent-max-effort-2026-07-27"
+BATCHES_BETA_HEADER = "batches-2026-06-06"
 
 # Exa categories the API actually honors (from the current OpenAPI enum):
 #   company | publication | news | personal site | financial report | people
@@ -401,7 +272,6 @@ class ExaNotFoundError(ExaError):
 
 class ExaServerError(ExaError):
     """5xx: transient Exa-side failure. Retry with backoff; if it persists, contact Exa."""
-
 
 
 _API_KEY_NAMES = ['EXA_API_KEY']
@@ -471,51 +341,99 @@ def _read_key_file(path, names):
     return None
 
 def _get_api_key():
+    """Resolve the Exa API key, caching a hit on the first env-var source.
+
+    The cache is invalidated when the originating environment variable is
+    removed or changed, so a key rotation is picked up without a process
+    restart. Raises ``ExaAuthError`` (not a bare ``RuntimeError``) when no key
+    can be found, matching the documented error contract.
+    """
     label = _API_LABEL
-    if label in _API_KEY_CACHE:
-        return _API_KEY_CACHE[label]
+    cached = _API_KEY_CACHE.get(label)
+    if cached:
+        key = cached if isinstance(cached, str) else cached[0]
+        # Trust the cache unless a candidate env var now differs from it —
+        # that detects rotation or removal without re-reading key files.
+        if all(os.environ.get(n, "") in ("", key) for n in _API_KEY_NAMES):
+            return key
     key = _seek_api_key(_API_KEY_NAMES)
     if not key:
-        raise RuntimeError(
+        raise ExaAuthError(
             f"{label} search is not configured: no API key "
             f"({', '.join(_API_KEY_NAMES)}) was found in the environment "
             f"or any key file. Ask the user to run /login (choose {label}) "
             f"or export {_API_KEY_NAMES[0]}; the skill picks it up automatically."
         )
-    for n in _API_KEY_NAMES:
-        os.environ.setdefault(n, key)
     _API_KEY_CACHE[label] = key
     return key
 
 
 def _request(method: str, path: str, api_key: str, *, base: str = DEFAULT_API_URL,
-             params=None, json_body=None, timeout=45.0, _retries=2) -> dict:
+             params=None, json_body=None, timeout=45.0, _retries=2,
+             _idempotent: Optional[bool] = None,
+             extra_headers: Optional[dict] = None) -> dict:
     """POST/GET to the Exa API, classifying errors for fast, actionable failures.
 
     Transient failures (429 rate-limit, 5xx) are retried up to ``_retries``
     times with short exponential backoff so a single throttled call does not
-    kill a fan-out. Non-transient errors raise a precise subclass:
-    ``ExaAuthError`` (401), ``ExaPlanError`` (403), ``ExaBadRequestError``
-    (400/422), ``ExaRateLimitError`` (429, after retries), ``ExaServerError``
-    (5xx, after retries).
+    kill a fan-out. **Only idempotent requests (GET, or ``_idempotent=True``)
+    are retried** — state-creating POST/PATCH/DELETE calls (e.g. ``POST
+    /agent/runs`` charges agent compute, ``POST /monitors`` creates a monitor)
+    are never re-sent, to avoid double-charging / duplicates. Non-transient
+    errors raise a precise subclass: ``ExaAuthError`` (401), ``ExaPlanError``
+    (403), ``ExaBadRequestError`` (400/422), ``ExaRateLimitError`` (429, after
+    retries), ``ExaServerError`` (5xx, after retries). Transport-level failures
+    (connect/read timeouts, pool exhaustion) raise ``ExaError`` rather than
+    leaking a raw httpx exception.
     """
     import time
+    import httpx as _httpx
     url = f"{base}{path}"
+    if _idempotent is None:
+        _idempotent = (method or "").upper() == "GET"
     last_resp = None
     detail = None
     for attempt in range(_retries + 1):
-        resp = _http().request(method, url, params=params, json=json_body,
-                               headers={"x-api-key": api_key}, timeout=timeout)
+        try:
+            resp = _http().request(method, url, params=params, json=json_body,
+                                   headers={"x-api-key": api_key, **(extra_headers or {})},
+                                   timeout=timeout)
+        except _httpx.TimeoutException as e:
+            raise ExaError(
+                f"Exa request to {path} timed out after {timeout}s "
+                f"({type(e).__name__}). Increase `timeout` and retry."
+            ) from e
+        except _httpx.HTTPError as e:
+            raise ExaError(
+                f"Exa request to {path} failed at the transport level "
+                f"({type(e).__name__}: {e}). Check network connectivity."
+            ) from e
         if resp.status_code < 400:
-            return resp.json()
+            try:
+                return resp.json()
+            except Exception:
+                # A 2xx with an empty or non-JSON body is a contract violation,
+                # not a silent success.
+                raise ExaError(
+                    f"Exa endpoint {path} returned {resp.status_code} with an "
+                    f"unparseable (non-JSON) body. Detail: {resp.text[:300]}"
+                )
         last_resp = resp
         try:
-            detail = resp.json()
+            _body = resp.json()
         except Exception:
-            detail = resp.text[:500]
+            _body = resp.text[:500]
+        # Exa's error body is { requestId, error: str, tag }; surface just the
+        # human-readable `error` string rather than the whole object so the
+        # exception message stays clean and actionable.
+        if isinstance(_body, dict) and isinstance(_body.get("error"), str):
+            detail = _body["error"]
+        else:
+            detail = _body if isinstance(_body, str) else str(_body)[:500]
         status = resp.status_code
-        # transient: retry then classify as rate/server after exhausting attempts
-        if status in (429, 500, 502, 503, 504) and attempt < _retries:
+        # transient: retry ONLY idempotent requests, then classify as
+        # rate/server after exhausting attempts (or immediately if not retryable)
+        if status in (429, 500, 502, 503, 504) and attempt < _retries and _idempotent:
             time.sleep(_retry_after_seconds(resp, 2 ** attempt * 0.5))
             continue
         if status == 404:
@@ -850,6 +768,7 @@ def entity_search(
         exclude_domains=exclude_domains, timeout=timeout,
     )
     roster: Dict[str, dict] = {}
+    raw_ents: List[dict] = []
     for r in sr.results:
         for raw_e in (getattr(r, "entities", None) or []):
             try:
@@ -859,14 +778,22 @@ def entity_search(
             key = s.get("id") or ((s.get("name") or "") + "|" + s.get("type", ""))
             if not key:
                 continue
+            if not dedupe:
+                s["_occurrences"] = 1
+                raw_ents.append(s)
+                continue
             if key in roster:
                 roster[key]["_occurrences"] = roster[key].get("_occurrences", 1) + 1
                 continue
             s["_occurrences"] = 1
             roster[key] = s
-    ents = list(roster.values())
-    ents.sort(key=lambda e: (-e.get("_occurrences", 0), e.get("type", ""),
-                              e.get("name", "") or ""))
+    if dedupe:
+        ents = list(roster.values())
+        ents.sort(key=lambda e: (-e.get("_occurrences", 0), e.get("type", ""),
+                                  e.get("name", "") or ""))
+    else:
+        # Preserve source order; no collapsing, occurrences are all 1.
+        ents = raw_ents
     return {
         "query": query,
         "category": category,
@@ -1021,7 +948,7 @@ def top_terms(
         "query": query,
         "total_results": len(sr.results),
         "top_terms": [{"term": w, "count": c} for w, c in tf.most_common(top_n)],
-        "domain_clusters": [{"domain": d, "count": c} for d, c in dom.most_common()],
+        "domain_clusters": [{"domain": d, "results": c, "count": c} for d, c in dom.most_common()],
         "total_cost": sr.total_cost(),
     }
 
@@ -1298,7 +1225,7 @@ def _resolve_search_type(search_type: Optional[str], default: str) -> str:
 def _mode_args(mode: str, category: Optional[str], search_type: Optional[str]):
     preset = MODES.get(mode)
     if preset is None:
-        raise ValueError(f"Unknown mode '{mode}'. Call `await exa.modes()` for the list.")
+        raise ExaBadRequestError(f"Unknown mode '{mode}'. Call `exa.modes()` for the list.")
     resolved_category = category if category is not None else preset.get("category")
     resolved_search_type = _resolve_search_type(search_type, preset.get("search_type", "auto"))
     return resolved_category, resolved_search_type
@@ -1821,7 +1748,10 @@ def fetch(
     # and the fetch actually returned readable text (so a failed crawl with no
     # content is still surfaced as a structured error instead of an empty page).
     if (len(results) == 1 and mode == "text" and not (with_highlights or with_summary)
-            and not extras_links and max_age_hours is None):
+            and not extras_links and max_age_hours is None
+            and text_verbosity is None and include_sections is None
+            and include_html_tags is False and subpages == 0
+            and not livecrawl and compliance is None):
         r0 = results[0]
         t = (r0.get("text") or "").strip()
         if t or r0.get("error") is None:
@@ -1833,7 +1763,6 @@ def fetch(
     if include_meta:
         return {"results": results, **meta}
     return results
-
 
 
 # ---------------------------------------------------------------------------
@@ -1851,7 +1780,7 @@ class Answer:
         self.raw = raw
         self.request_id: str = raw.get("requestId") or ""
         self.answer = raw.get("answer")
-        self.citations: List[dict] = raw.get("citations", [])
+        self.citations: List[dict] = raw.get("citations") or []
         self.cost_dollars = raw.get("costDollars")
 
     @property
@@ -1915,6 +1844,10 @@ def answer(
         output_schema: A JSON Schema (root type 'text' or 'object'). When given,
             ``Answer.answer`` is a structured object instead of a string.
         text: Include full page text of each citation source (heavier).
+        stream: Forward ``stream: true`` to the API's streaming answer path.
+            When True the server may emit the answer incrementally; this client
+            still returns a single ``Answer`` (use ``stream_answer`` for true
+            line-by-line streaming). Default False.
         citation_format: Live-verified ``citationFormat`` passthrough (v0.14).
             A dict of bools selecting which citation fields to request / return,
             e.g. ``{"id": True, "favicon": True, "author": True,
@@ -2401,12 +2334,18 @@ def agent(
     if inp:
         body["input"] = inp
 
-    created = _request("POST", "/agent/runs", key, json_body=body, timeout=min(timeout, 30))
+    # Budget includes the create call: compute the deadline *before* POSTing so
+    # a slow create cannot push the whole run past `timeout`.
+    deadline = time.time() + timeout
+    created = _request("POST", "/agent/runs", key, json_body=body,
+                       timeout=max(1.0, min(timeout, 30, deadline - time.time())))
     run = AgentRun(created)
     if run.done:  # rare: already terminal on create
+        if raise_on_failed and run.status == "failed":
+            raise ExaError(f"Exa agent run {run.id} failed (stop_reason={run.stop_reason}). "
+                           f"Try lower effort, a simpler output_schema, or rephrasing the query.")
         return run
 
-    deadline = time.time() + timeout
     run_id = run.id
     def _tick():
         data = _request("GET", f"/agent/runs/{run_id}", key, timeout=min(timeout, 45))
@@ -2646,7 +2585,7 @@ def stream_answer(query, *, output_schema=None, text=False,
         body["citationFormat"] = citation_format
     parts: List[str] = []
     citations_out: List[dict] = []
-    cost_dollars: Optional[float] = None
+    cost_dollars: Optional[dict] = None
     request_id_meta = ""
     with httpx.stream("POST", f"{DEFAULT_API_URL}/answer", json=body,
                       headers={"x-api-key": key}, timeout=timeout) as resp:
@@ -2672,7 +2611,7 @@ def stream_answer(query, *, output_schema=None, text=False,
                 citations_out = obj.get("citations") or []
                 continue
             if "costDollars" in obj:
-                cost_dollars = (obj.get("costDollars") or {}).get("total")
+                cost_dollars = obj.get("costDollars")
                 continue
             for c in (obj.get("choices") or []):
                 delta = c.get("delta") or {}
@@ -2915,8 +2854,6 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
     }
 
 
-
-
 # ---------------------------------------------------------------------------
 # Monitors — scheduled recurring change-detection searches  (api.exa.ai/monitors)
 # ---------------------------------------------------------------------------
@@ -2995,7 +2932,7 @@ def monitor_create(query, *, name=None, period="24h", num_results=5, output_sche
         body["webhook"]["events"] = events
     if output_schema:
         body["outputSchema"] = output_schema
-    return _request("POST", "/monitors", key, json_body=body, timeout=30)
+    return _request("POST", "/monitors", key, json_body=body, timeout=timeout)
 
 
 def monitor_list(*, status=None, name=None, metadata=None, limit=50, cursor=None):
@@ -3114,29 +3051,37 @@ def monitor_check(monitor_id, *, trigger_if_empty: bool = True, timeout: float =
         If no run exists and ``auto_if_empty=True``, ``run_output`` is ``None``
         and ``triggered`` is True.
     """
-    # List runs and get the most recent one
+    # List runs; surface the most recent run that actually produced output.
+    # (The newest run may still be in-flight or empty, while an older run
+    # already delivered a result — only trigger when no run has output yet.)
     runs = monitor_runs(monitor_id, limit=5)
     runs_data = runs if isinstance(runs, list) else runs.get("data", [])
-    if runs_data:
-        latest_run = runs_data[0]
-        if latest_run and latest_run.get("output"):
-            return {
-                "monitor_id": monitor_id,
-                "has_run": True,
-                "run_id": latest_run.get("id"),
-                "run_output": latest_run.get("output"),
-                "triggered": False,
-            }
+    latest_run = runs_data[0] if runs_data else None
+    chosen = None
+    for run in runs_data:
+        if run and run.get("output"):
+            chosen = run
+            break
+    if chosen:
+        return {
+            "monitor_id": monitor_id,
+            "has_run": True,
+            "run_id": chosen.get("id"),
+            "run_output": chosen.get("output"),
+            "latest_run": latest_run,
+            "triggered": False,
+        }
 
     triggered = False
     if trigger_if_empty:
-        trigger_result = monitor_trigger(monitor_id, timeout=timeout)
+        monitor_trigger(monitor_id, timeout=timeout)
         triggered = True
     return {
         "monitor_id": monitor_id,
-        "has_run": False,
-        "run_id": None,
+        "has_run": bool(runs_data),
+        "run_id": (latest_run or {}).get("id") if latest_run else None,
         "run_output": None,
+        "latest_run": latest_run,
         "triggered": triggered,
     }
 def wmonitor_create(webset_id, *, cron, timezone="Etc/UTC", count=10,
@@ -3273,6 +3218,35 @@ def agent_cancel(run_id):
     return _request("POST", f"/agent/runs/{run_id}/cancel", _get_api_key())
 
 
+def agent_stop(run_id, *, reason="budget_reached"):
+    """Halt a running agent run at the next safe checkpoint.
+
+    Distinct from :func:`agent_cancel`: *cancel* aborts the run (final status
+    ``cancelled``); *stop* tells the run to stop cleanly once it reaches a
+    checkpoint (e.g. it has satisfied the output schema or hit the budget), so
+    partial work can be kept. ``reason`` is one of the API's stop reasons:
+    ``schema_satisfied`` | ``budget_reached`` | ``stopped`` | ``error`` |
+    ``cancelled``.
+
+    Graceful stop is supported **only for effort=max runs** and requires the
+    ``Exa-Beta: agent-max-effort-2026-07-27`` header (sent automatically); for
+    lower-effort runs the API returns 400 — use :func:`agent_cancel` instead.
+    If the run has already reached a terminal status, the existing run is
+    returned unchanged.
+
+    Args:
+        run_id: The agent run's id (``agent_run_...``).
+        reason: Why to stop (default ``budget_reached``).
+
+    Returns:
+        The run snapshot (``{"id", "object", "status", "stopReason", ...}``)
+        after the stop is applied.
+    """
+    return _request("POST", f"/agent/runs/{run_id}/stop", _get_api_key(),
+                    json_body={"reason": reason}, _idempotent=True,
+                    extra_headers={"Exa-Beta": AGENT_STOP_BETA_HEADER})
+
+
 def agent_events(run_id, *, limit=None, cursor=None):
     """Fetch the ordered event list of an agent run, with pagination support.
 
@@ -3290,6 +3264,162 @@ def agent_events(run_id, *, limit=None, cursor=None):
     return _request("GET", f"/agent/runs/{run_id}/events", _get_api_key(), params=params)
 
 
+# ---------------------------------------------------------------------------
+# Batches — run many /search and /agent/runs calls in one server-side batch
+# (api.exa.ai/batches). A batch accepts a list of sub-requests, each addressed
+# by a caller-chosen ``customId`` and routed to a fixed target URL (v1: only
+# ``/search`` and ``/agent/runs``). Exa runs them asynchronously; the batch
+# carries lifecycle counts (``requestCounts``) and, once complete, a short-lived
+# presigned ``resultsUrl`` that downloads the per-request results as JSONL.
+# ---------------------------------------------------------------------------
+def batch_create(requests, *, timeout=45.0):
+    """Create a batch of asynchronous Exa sub-requests.
+
+    Args:
+        requests: a list of sub-request dicts. Each MUST carry ``url``
+            (``"/search"`` or ``"/agent/runs"``) and ``body`` (that route's
+            request payload). ``customId`` (your own 1..64-char handle that
+            keys the result) and ``method`` (``"POST"``) are auto-filled when
+            absent — ``customId`` defaults to ``"req-<index>"``.
+        timeout: forwarded to the create call.
+
+    Returns:
+        The batch object: ``{"id" (batch_...), "object", "status"
+        (in_progress|completed|cancelling|cancelled|expired), "requestCounts"
+        {total,completed,failed}, "createdAt", "expiresAt", "endedAt",
+        "resultsUrl" (None until complete), "metadata"}``.
+    """
+    if not requests:
+        raise ExaBadRequestError("batch_create requires at least one sub-request.")
+    norm = []
+    for i, r in enumerate(requests):
+        if not isinstance(r, dict):
+            raise ExaBadRequestError(
+                f"batch_create: sub-request #{i} must be a dict, got {type(r).__name__}.")
+        item = dict(r)
+        item.setdefault("method", "POST")
+        item.setdefault("customId", f"req-{i}")
+        if item.get("url") not in ("/search", "/agent/runs"):
+            raise ExaBadRequestError(
+                f"batch_create: sub-request '{item.get('customId')}' has url "
+                f"{item.get('url')!r}; v1 only supports '/search' and '/agent/runs'.")
+        if item.get("method") != "POST":
+            raise ExaBadRequestError(
+                f"batch_create: sub-request '{item.get('customId')}' method must be "
+                f"'POST' in v1, got {item.get('method')!r}.")
+        if not item.get("body"):
+            raise ExaBadRequestError(
+                f"batch_create: sub-request '{item.get('customId')}' needs a 'body' payload.")
+        norm.append(item)
+    return _request("POST", "/batches", _get_api_key(), json_body={"requests": norm},
+                    timeout=timeout,
+                    extra_headers={"Exa-Beta": BATCHES_BETA_HEADER})
+
+
+def batch_get(batch_id, *, timeout=45.0):
+    """Fetch the current snapshot of a batch (status + counts + resultsUrl)."""
+    return _request("GET", f"/batches/{batch_id}", _get_api_key(), timeout=timeout,
+                    extra_headers={"Exa-Beta": BATCHES_BETA_HEADER})
+
+
+def batch_list(*, limit=100, cursor=None, timeout=45.0):
+    """List batches (reverse chronological) with pagination.
+
+    Args:
+        limit: max batches per page (default 100).
+        cursor: pagination cursor from a previous response's ``nextCursor``.
+    Returns:
+        ``{"object":"list", "data":[batch, ...], "hasMore", "nextCursor"}``.
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if cursor: params["cursor"] = cursor
+    return _request("GET", "/batches", _get_api_key(), params=params, timeout=timeout,
+                    extra_headers={"Exa-Beta": BATCHES_BETA_HEADER})
+
+
+def batch_cancel(batch_id, *, timeout=45.0):
+    """Ask the API to stop an in-progress batch. Returns the batch snapshot."""
+    return _request("POST", f"/batches/{batch_id}/cancel", _get_api_key(),
+                    timeout=timeout, _idempotent=True,
+                    extra_headers={"Exa-Beta": BATCHES_BETA_HEADER})
+
+
+def batch_delete(batch_id, *, timeout=45.0):
+    """Delete a batch and its results (irreversible)."""
+    return _request("DELETE", f"/batches/{batch_id}", _get_api_key(), timeout=timeout,
+                    extra_headers={"Exa-Beta": BATCHES_BETA_HEADER})
+
+
+def _download_batch_results(results_url, *, timeout=60.0):
+    """Download a batch's presigned JSONL results URL and parse the lines.
+
+    Returns ``{"results": {customId: parsed_json}, "lines": [raw_json, ...]}``.
+    Lines lacking a ``customId`` are keyed by their 0-based line index.
+    """
+    import httpx as _httpx
+    resp = _http().get(results_url, timeout=timeout, follow_redirects=True)
+    if resp.status_code != 200:
+        raise ExaError(f"batch results download failed (HTTP {resp.status_code}).")
+    lines = []
+    results: dict[str, Any] = {}
+    for idx, raw in enumerate(resp.text.splitlines()):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            obj = {"_raw": raw, "_line": idx}
+        lines.append(obj)
+        key = obj.get("customId") if isinstance(obj, dict) else None
+        results[str(key) if key is not None else f"line-{idx}"] = obj
+    return {"results": results, "lines": lines}
+
+
+def poll_batch(batch_id, *, timeout=150.0, poll_interval=3.0, fetch_results=True):
+    """Poll a batch to a terminal state, then download its results.
+
+    Terminal statuses: ``completed`` / ``cancelling`` / ``cancelled`` /
+    ``expired``. On completion the per-request results are pulled from the
+    presigned ``resultsUrl`` (JSONL) and indexed by ``customId``.
+
+    Args:
+        batch_id: the batch id (``batch_...``).
+        timeout: total wall-clock budget in seconds before giving up (default 150).
+        poll_interval: seconds between polls (default 3.0).
+        fetch_results: download + parse the results JSONL when complete (default True).
+
+    Returns:
+        ``{"batch": <final snapshot>, "results": {customId: {...}},
+        "results_lines": [...], "results_url": str|None}``. Raises ``ExaError``
+        on a failed terminal state or when the wall-clock budget is exceeded.
+    """
+    import time
+    deadline = time.time() + timeout
+    snap = batch_get(batch_id, timeout=min(poll_interval * 2, 45.0))
+    while (snap.get("status") or "").lower() in ("in_progress", ""):
+        if time.time() > deadline:
+            raise ExaError(
+                f"batch {batch_id} still in_progress after {timeout}s; poll "
+                f"'exa.poll_batch(\"{batch_id}\", fetch_results=False)' later to "
+                f"resume, or 'exa.batch_get(\"{batch_id}\")' for a one-shot check.")
+        time.sleep(poll_interval)
+        snap = batch_get(batch_id, timeout=min(poll_interval * 2, 45.0))
+    status = (snap.get("status") or "").lower()
+    counts = snap.get("requestCounts") or {}
+    if status == "expired":
+        raise ExaError(
+            f"batch {batch_id} expired (counts={counts}). The batch has not "
+            f"completed and its results are unavailable; create a fresh batch.")
+    results_url = snap.get("resultsUrl")
+    results: dict[str, Any] = {}
+    lines: list[Any] = []
+    if fetch_results and results_url:
+        dl = _download_batch_results(results_url)
+        results = dl["results"]
+        lines = dl["lines"]
+    return {"batch": snap, "results": results, "results_lines": lines,
+            "results_url": results_url}
 
 
 # ---------------------------------------------------------------------------
@@ -3694,8 +3824,11 @@ def webset_eval_review(webset_id, *, limit=100, cursor=None, timeout=45.0):
     return {
         "markdown": "\n".join(md),
         "criteria": criteria_order,
-        "by_satisfaction": by_sat,
+        "item_count": len(items),
+        "by_satisfied": by_sat,
+        # Back-compat aliases for callers built against the original keys.
         "count": len(items),
+        "by_satisfaction": by_sat,
         "items": items,
     }
 
@@ -4002,6 +4135,14 @@ def webhook_list(*, limit=50, cursor=None):
 
 
 def webhook_get(webhook_id):
+    """Fetch a single webhook by id.
+
+    Args:
+        webhook_id: the webhook's id (from ``webhook_create`` / ``webhook_list``).
+
+    Returns:
+        The full webhook object (id, events, url, metadata, active, ``secret``).
+    """
     return _request("GET", f"/v0/webhooks/{webhook_id}", _get_api_key(), base=WEBSETS_API_URL)
 
 
@@ -4016,6 +4157,14 @@ def webhook_update(webhook_id, *, events=None, url=None, metadata=None):
 
 
 def webhook_delete(webhook_id):
+    """Delete a webhook by id.
+
+    Args:
+        webhook_id: the webhook's id.
+
+    Returns:
+        The deletion acknowledgment from the API.
+    """
     return _request("DELETE", f"/v0/webhooks/{webhook_id}", _get_api_key(), base=WEBSETS_API_URL)
 
 
@@ -4083,8 +4232,6 @@ def event_get(event_id):
     return _request("GET", f"/v0/events/{event_id}", _get_api_key(), base=WEBSETS_API_URL)
 
 
-
-
 # ---------------------------------------------------------------------------
 # deep_research()  — fan-out orchestration across several related questions
 # ---------------------------------------------------------------------------
@@ -4121,6 +4268,7 @@ def deep_research(
     moderation: bool = False,
     timeout: float = 120.0,
     dedupe: bool = True,
+    concurrency: int = 8,
 ) -> SearchResults:
     """Multi-query research: run several related questions and merge results.
 
@@ -4129,6 +4277,11 @@ def deep_research(
     URL (kept per query if ``dedupe=False``), and re-ranked so results shared by
     more queries bubble to the top. Useful for quickly assembling a broad,
     source-rich picture across several angles.
+
+    The per-query searches run in parallel (bounded by ``concurrency``) rather
+    than sequentially. If any query fails, the first error is raised — the same
+    contract as the serial version — though the remaining in-flight queries still
+    complete and are billed.
 
     ``search_type`` defaults to the mode's default (usually ``auto``); pass a
     deep-* variant (``deep``, ``deep-lite``, ``deep-reasoning``) to give every
@@ -4143,42 +4296,53 @@ def deep_research(
         dedupe: True (default) -> near-duplicates (same canonical URL, `www.`-
             insensitive) are merged and results shared by multiple queries are
             ranked first. False -> keep every per-query result as-is.
+        concurrency: max queries searched in parallel (default 8, capped at the
+            connection pool). Lower it on rate-limited plans.
 
     Returns:
-        A merged ``SearchResults``. With dedupe, ``result.extras["query_hits"]``
-        is set to the query count when a page matched more than one query.
-
-    Returns:
-        A merged ``SearchResults``. For deduped results, the ``Result.extra``
-        field is set to {"query_hits": <count>} when a page matched >1 query.
+        A merged ``SearchResults``. With dedupe, the ``Result.extra`` field is
+        set to {"query_hits": <count>} when a page matched more than one query.
     """
     if isinstance(queries, str):
         queries = [queries]
     if not queries:
         raise ExaError("deep_research requires at least one query.")
-    calls = []
-    for q in queries:
-        calls.append(search(
-            q, mode=mode, num_results=num_results, search_type=search_type,
-            category=category, include_domains=include_domains,
-            exclude_domains=exclude_domains,
-            start_published_date=start_published_date,
-            end_published_date=end_published_date,
-            with_text=with_text, with_highlights=with_highlights,
-            highlights_query=highlights_query,
-            highlights_max_characters=highlights_max_characters,
-            max_characters=max_characters, text_verbosity=text_verbosity,
-            with_summary=with_summary, summary_query=summary_query,
-            summary_schema=summary_schema,
-            extras_links=extras_links, extras_image_links=extras_image_links,
-            extras_rich_links=extras_rich_links,
-            extras_rich_image_links=extras_rich_image_links,
-            extras_code_blocks=extras_code_blocks,
-            max_age_hours=max_age_hours, subpages=subpages,
-            output_schema=output_schema, system_prompt=system_prompt,
-            user_location=user_location, moderation=moderation,
-            timeout=timeout,
-        ))
+    # All sub-queries share the same filters; only the query text varies.
+    shared = dict(
+        mode=mode, num_results=num_results, search_type=search_type,
+        category=category, include_domains=include_domains,
+        exclude_domains=exclude_domains,
+        start_published_date=start_published_date,
+        end_published_date=end_published_date,
+        with_text=with_text, with_highlights=with_highlights,
+        highlights_query=highlights_query,
+        highlights_max_characters=highlights_max_characters,
+        max_characters=max_characters, text_verbosity=text_verbosity,
+        with_summary=with_summary, summary_query=summary_query,
+        summary_schema=summary_schema,
+        extras_links=extras_links, extras_image_links=extras_image_links,
+        extras_rich_links=extras_rich_links,
+        extras_rich_image_links=extras_rich_image_links,
+        extras_code_blocks=extras_code_blocks,
+        max_age_hours=max_age_hours, subpages=subpages,
+        output_schema=output_schema, system_prompt=system_prompt,
+        user_location=user_location, moderation=moderation,
+        timeout=timeout,
+    )
+    # Fan out the per-query searches in parallel; input order is preserved for
+    # the merge. The first failing query (in input order) raises, matching the
+    # serial contract — the cost of parallelism is that in-flight siblings still
+    # complete and bill.
+    got = _fanout(
+        [(q, (lambda q=q, s=shared: search(q, **s))) for q in queries],
+        concurrency=concurrency,
+    )
+    calls: List[SearchResults] = []
+    for _q, ok, val in got:
+        if ok:
+            calls.append(val)
+        else:
+            raise val
     if not dedupe:
         merged: List[Result] = []
         idx = 1
@@ -4226,7 +4390,6 @@ def deep_research(
                           request_id=",".join(c.request_id for c in calls),
                           cost_dollars=None, raw=None,
                           search_time_ms=_sum_search_times_defined(calls))
-
 
 
 def merge_searches(*search_results, dedupe: bool = True) -> SearchResults:
@@ -5446,7 +5609,6 @@ def hf_discussions(query, *, num_results=6, timeout=45.0):
             "markdown": "\n".join(lines)}
 
 
-
 # ---------------------------------------------------------------------------
 # Round-18: developer workflows — `is_deprecated`, `deprecations`,
 # `pkg_releases`, `snippet`, `api_reference`, `code_lint_tips`.
@@ -5454,172 +5616,6 @@ def hf_discussions(query, *, num_results=6, timeout=45.0):
 # `news_roundup` / `dev_help` primitives (no new API surface). Live-verified
 # against api.exa.ai. New public entry points; no prior signature touched.
 # ---------------------------------------------------------------------------
-
-
-def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):
-    """Release / version-signal digest for a package (PyPI/npm/crates/GitHub).
-
-    Scans GitHub-mode + registry results for visible version bumps (release
-    tags, changelog pages) plus an optional freshness news sweep. This is a
-    search/surface digest, not an authoritative registry index (honest).
-
-    Args:
-        pkg: package name (e.g. ``"httpx"``, ``"fastapi"``).
-        with_news: also run a 7-day news sweep for the package (default True).
-        num_news / timeout: forwarded to the underlying calls.
-
-    Returns:
-        {"pkg", "releases":[{title,url,source,published}], "news":[{title,url,
-         domain}], "n_releases", "n_news", "markdown"}.
-    """
-    q = (pkg + " release notes")
-    res = search(q, mode="github", num_results=num_results if num_results else 8,
-                 with_text=True, max_characters=260, timeout=timeout)
-    releases = []
-    for r in (res.results or []):
-        low = (r.url or "").lower()
-        if "/releases/" in low or "/tags/" in low or "changelog" in low \
-                or "release" in (r.title or "").lower():
-            releases.append({"title": r.title, "url": r.url,
-                             "source": (r.domain or ""), "published": r.published_date})
-    news = []
-    if with_news:
-        try:
-            nr = news_roundup(pkg, days=7, num_results=5, timeout=min(timeout, 40.0))
-            for r in (nr.results or [])[:5]:
-                news.append({"title": getattr(r, "title", None),
-                             "url": getattr(r, "url", None),
-                             "domain": getattr(r, "domain", None)})
-        except Exception:
-            news = []
-    lines = ["## %s releases" % pkg, ""]
-    for rv in releases[:num_results]:
-        lines.append("- %s  %s" % (rv["title"], rv["url"]))
-    if news:
-        lines.append("\n### Recent news")
-        for r in news:
-            lines.append("- %s  [%s]" % (r["title"], r["domain"]))
-    return {"pkg": pkg, "releases": releases, "news": news,
-            "n_releases": len(releases), "n_news": len(news),
-            "markdown": "\n".join(lines)}
-
-
-def _dep_type(blob):
-    bb = (blob or "").lower()
-    if "deprecat" in bb or "obsolete" in bb or "end of life" in bb:
-        return "deprecat"
-    if "migrat" in bb:
-        return "migrat"
-    if "remov" in bb or "sunset" in bb:
-        return "removal"
-    if "breaking" in bb or "major change" in bb:
-        return "breaking"
-    if "release" in bb or "changelog" in bb or "what's new" in bb:
-        return "release"
-    return "other"
-
-
-def deprecations(query: str, *, days=30, timeout=90.0):
-    """Deprecation / end-of-life signals for a library or API.
-
-    Composes `answer` over a deprecation corpus plus a freshness-filtered news
-    sweep, labeling each signal (deprecat / migrat / removal / breaking /
-    release). Honest: only items that actually surface the vocabulary.
-
-    Args:
-        query: library / API (e.g. ``"Node.js"``, ``"pydantic v1"``).
-        days: news freshness window (default 30).
-        timeout: forwarded to calls.
-
-    Returns:
-        {"query", "signals":[{url,title,type,snippet}], "counts", "n",
-         "markdown"}.
-    """
-    import re as _re
-    from datetime import datetime, timedelta
-    sig = []
-    ans_text = None
-    try:
-        ans = answer(query + " deprecated",
-                     text=True, citation_format={"id": True, "title": True},
-                     timeout=timeout)
-        ans_text = getattr(ans, "answer", None) or ""
-        for c in (getattr(ans, "citations", None) or []):
-            title = (c.get("title") or "")[:140]
-            blob = title + " " + str(c.get("url", ""))
-            if _re.search(r"\b(deprecat|obsolete|end[- ]of[- ]life|remov|migrat|breaking)\b", blob, _re.I):
-                sig.append({"url": c.get("url"), "title": title, "type": _dep_type(blob)})
-    except Exception:
-        pass
-    if ans_text and _re.search(r"\b(deprecat|obsolete|removed|migrat|breaking)\b", ans_text, _re.I):
-        # the model answer itself flags deprecation - record as a signal.
-        sig.append({"url": None, "title": ans_text[:140], "type": "deprecat"})
-    try:
-        end = datetime.utcnow()
-        start = end - timedelta(days=max(1, days))
-        sr = search(query + " deprecated", mode="news",
-                    num_results=10, with_summary=True,
-                    start_published_date=start.strftime("%Y-%m-%d"),
-                    end_published_date=end.strftime("%Y-%m-%d"),
-                    timeout=min(timeout, 40.0))
-        for r in (sr.results or []):
-            blob = (r.title or "") + " " + (r.summary or "")
-            if _re.search(r"\b(deprecat|obsolete|removed|migrat|breaking|sunset)\b", blob, _re.I):
-                sig.append({"url": r.url, "title": r.title, "type": _dep_type(blob)})
-    except Exception:
-        pass
-    counts = {}
-    for s in sig:
-        counts[s["type"]] = counts.get(s["type"], 0) + 1
-    out = ["## Deprecation signals for %s" % query, ""]
-    for s in sig[:12]:
-        out.append("- [%s] %s  %s" % (s["type"], (s.get("title") or "")[:90], s.get("url")))
-    return {"query": query, "signals": sig, "counts": counts, "n": len(sig),
-            "markdown": "\n".join(out)}
-
-
-def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):
-    """Pull small code snippets relevant to a developer question.
-
-    Uses GitHub-mode `search` and surfaces candidate snippet rows — repo,
-    filename, url, a short extract. ``lang`` optionally filters by filename
-    extension (``py``, ``js``, ``ts``, ``cpp``, ``go``, ``rs``, ``sh``...).
-    Honest: empty list when no code matches.
-
-    Args:
-        query: what to find a code sample for.
-        lang: optional filename extension to prefer (default all).
-        num_results: github rows to scan (default 6).
-        timeout: forwarded to search.
-
-    Returns:
-        {"query", "lang", "snippets":[{repo,file,ext,url,extract}], "n",
-         "markdown"}.
-    """
-    import os as _os
-    res = search(query, mode="github", num_results=num_results,
-                 with_text=True, max_characters=500, timeout=timeout)
-    exts = {".py", ".js", ".ts", ".tsx", ".cpp", ".c", ".h", ".rs", ".go",
-            ".java", ".rb", ".cs", ".sh", ".md", ".mjs", ".cjs"}
-    snippets = []
-    for r in (res.results or []):
-        u = r.url or ""
-        fname = u.rstrip("/").split("/")[-1] if u else ""
-        ext = _os.path.splitext(fname)[1].lower()
-        if not ext or ext not in exts:
-            continue
-        if lang and lang != "*" and ext != (lang if lang.startswith(".") else "." + lang):
-            continue
-        repo = "/".join(u.split("/")[3:5]) if u.startswith("https://github.com/") else u
-        snippets.append({"repo": repo, "file": fname, "ext": ext.lstrip("."),
-                         "url": u, "extract": (r.text or r.snippet or "")[:200]})
-    lines = ["## Snippets for " + query, ""]
-    for s in snippets[:12]:
-        lines.append("- `%s`  %s" % (s["file"], s["url"]))
-        if s["extract"]:
-            lines.append("  >>> " + s["extract"].replace("\n", " "))
-    return {"query": query, "lang": lang, "snippets": snippets,
-            "n": len(snippets), "markdown": "\n".join(lines)}
 
 
 def api_reference(url, *, max_characters=9000, with_summary=True, timeout=45.0):
@@ -5631,7 +5627,7 @@ def api_reference(url, *, max_characters=9000, with_summary=True, timeout=45.0):
 
     Args:
         url: documentation / API page.
-        max_characters: max text to keep (default 16000).
+        max_characters: max text to keep (default 9000).
         with_summary: include the model summary (default True).
         timeout: forwarded to fetch.
 
@@ -5669,30 +5665,6 @@ def api_reference(url, *, max_characters=9000, with_summary=True, timeout=45.0):
             "markdown": head}
 
 
-def code_lint_tips(query: str, *, timeout=90.0):
-    """Dev foot-gun / lint-warning primer for a framework — no model call.
-
-    Delegates to `dev_help` (answer over a code corpus with snippets +
-    sources) and returns the answer text, the numbered snippets, and source
-    list — a quick primer a dev agent can act on.
-
-    Args:
-        query: framework topic or foot-gun (e.g. "pandas chained assignment").
-        timeout: forwarded to dev_help.
-
-    Returns:
-        {"query", "answer": str, "snippets": [...], "sources": [...],
-         "markdown": str}.
-    """
-    dh = dev_help(query, timeout=timeout)
-    return {"query": query,
-            "answer": dh.get("answer", ""),
-            "snippets": dh.get("snippets") or [],
-            "sources": dh.get("sources") or [],
-            "markdown": dh.get("markdown") or dh.get("answer", "")}
-
-
-
 # ---------------------------------------------------------------------------
 # Round-18: developer workflows — `is_deprecated`, `deprecations`,
 # `pkg_releases`, `snippet`, `api_reference`, `code_lint_tips`.
@@ -5783,6 +5755,11 @@ def deprecations(query: str, *, days=30, timeout=90.0):
     """
     import re as _re
     from datetime import datetime, timedelta
+    # Stem matchers: substring for stems that inflect (removals, migrated, deprecation)
+    # and for end[- ]of[- ]life; word-boundary only for whole words. Case-insensitive.
+    def _hits(blob, stems, words):
+        low = (blob or "").lower()
+        return any(s in low for s in stems) or any(_re.search(r"\b" + w + r"\b", low) for w in words)
     sig = []
     ans_text = None
     try:
@@ -5793,11 +5770,12 @@ def deprecations(query: str, *, days=30, timeout=90.0):
         for c in (getattr(ans, "citations", None) or []):
             title = (c.get("title") or "")[:140]
             blob = title + " " + str(c.get("url", ""))
-            if _re.search(r"\b(deprecat|obsolete|end[- ]of[- ]life|remov|migrat|breaking)\b", blob, _re.I):
+            if _hits(blob, ("deprecat", "migrat", "remov", "end of life", "end-of-life"),
+                     ("obsolete", "breaking")):
                 sig.append({"url": c.get("url"), "title": title, "type": _dep_type(blob)})
     except Exception:
         pass
-    if ans_text and _re.search(r"\b(deprecat|obsolete|removed|migrat|breaking)\b", ans_text, _re.I):
+    if ans_text and _hits(ans_text, ("deprecat", "migrat", "remov"), ("obsolete", "breaking")):
         sig.append({"url": None, "title": ans_text[:140], "type": "deprecat"})
     try:
         end = datetime.utcnow()
@@ -5809,7 +5787,7 @@ def deprecations(query: str, *, days=30, timeout=90.0):
                     timeout=min(timeout, 40.0))
         for r in (sr.results or []):
             blob = (r.title or "") + " " + (r.summary or "")
-            if _re.search(r"\b(deprecat|obsolete|removed|migrat|breaking|sunset)\b", blob, _re.I):
+            if _hits(blob, ("deprecat", "migrat", "remov"), ("obsolete", "breaking", "sunset")):
                 sig.append({"url": r.url, "title": r.title, "type": _dep_type(blob)})
     except Exception:
         pass
@@ -5888,7 +5866,6 @@ def code_lint_tips(query: str, *, timeout=90.0):
             "snippets": dh.get("snippets") or [],
             "sources": dh.get("sources") or [],
             "markdown": dh.get("markdown") or dh.get("answer", "")}
-
 
 
 def is_deprecated(pkg, *, days=180, timeout=90.0):
@@ -5953,6 +5930,9 @@ __all__ = [
     "wmonitor_create", "wmonitor_list", "wmonitor_get", "wmonitor_update",
     "wmonitor_delete", "wmonitor_runs", "wmonitor_run_get",
     "agent_list", "agent_get", "agent_delete", "agent_cancel", "agent_events",
+    "agent_stop",
+    "batch_create", "batch_get", "batch_list", "batch_cancel", "batch_delete",
+    "poll_batch",
     "team_info",
     "webset_preview", "webset_create", "webset_list", "webset_get",
     "webset_delete", "webset_cancel", "webset_update", "webset_items",
@@ -5985,4 +5965,6 @@ for _result_cls in (Result, SearchResults, Answer, AgentRun, AgentTrace):
     if "__await__" not in getattr(_result_cls, "__dict__", {}):
         _result_cls.__await__ = _identity_await
 
-_apply_async_to(globals())
+# Wrap only the public API (`__all__`); imported helpers (e.g.
+# parsedate_to_datetime) keep their original, non-wrapped identity.
+_apply_async_to(globals(), public=__all__)

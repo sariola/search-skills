@@ -1,0 +1,3301 @@
+{
+ "a0113738e0725899d": {
+  "module": "exa.websets",
+  "section": "exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line_range": "3308-3921",
+  "functions": [
+   {
+    "name": "team_info",
+    "kind": "function",
+    "signature": "def team_info():",
+    "line": 3308,
+    "purpose": "GET the authenticated team + concurrency/limits.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/teams/me"
+    ]
+   },
+   {
+    "name": "webset_preview",
+    "kind": "function",
+    "signature": "def webset_preview(query, *, search_items=False, entity=None, count=10, timeout=90.0):",
+    "line": 3314,
+    "purpose": "Preview entity/criteria decomposition without creating a webset; optionally return matching items.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/preview"
+    ]
+   },
+   {
+    "name": "webset_create",
+    "kind": "function",
+    "signature": "def webset_create(query, *, count=10, title=None, external_id=None, entity=None, criteria=None, exclude=None, scope=None, recall=False, max_people_per_company=None, metadata=None, require_criteria=True, enrichments=None, imports=None, timeout=90.0):",
+    "line": 3340,
+    "purpose": "Create a Webset and start entity discovery; overrides for entity/criteria/imports/enrichments.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets"
+    ]
+   },
+   {
+    "name": "webset_list",
+    "kind": "function",
+    "signature": "def webset_list(*, limit=50, cursor=None, search=None):",
+    "line": 3388,
+    "purpose": "List websets for the team with substring/pagination filters.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets"
+    ]
+   },
+   {
+    "name": "webset_get",
+    "kind": "function",
+    "signature": "def webset_get(webset_id, *, include_items=False):",
+    "line": 3402,
+    "purpose": "Fetch one webset; expand=items embeds current items in a single round-trip.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}"
+    ]
+   },
+   {
+    "name": "webset_delete",
+    "kind": "function",
+    "signature": "def webset_delete(webset_id):",
+    "line": 3420,
+    "purpose": "Delete a webset and everything under it.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}"
+    ]
+   },
+   {
+    "name": "webset_cancel",
+    "kind": "function",
+    "signature": "def webset_cancel(webset_id):",
+    "line": 3425,
+    "purpose": "Cancel a running webset search (idempotent).",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/cancel"
+    ]
+   },
+   {
+    "name": "webset_update",
+    "kind": "function",
+    "signature": "def webset_update(webset_id, *, title=None, metadata=None):",
+    "line": 3430,
+    "purpose": "Update a webset's title / metadata via POST.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}"
+    ]
+   },
+   {
+    "name": "webset_items",
+    "kind": "function",
+    "signature": "def webset_items(webset_id, *, limit=100, cursor=None, source_id=None, satisfied=None):",
+    "line": 3439,
+    "purpose": "Get a page of webset items; optional client-side satisfied yes/no/unclear post-filter over evaluations.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/items"
+    ]
+   },
+   {
+    "name": "webset_item_type",
+    "kind": "function",
+    "signature": "def webset_item_type(item: dict) -> str:",
+    "line": 3480,
+    "purpose": "Return entity type of an item from properties.type, defaulting to 'unknown'.",
+    "deps": [],
+    "endpoints": []
+   },
+   {
+    "name": "webset_item_name",
+    "kind": "function",
+    "signature": "def webset_item_name(item: dict) -> str:",
+    "line": 3489,
+    "purpose": "Human-friendly name for person/company/article/research_paper/custom items, falling back to URL/id.",
+    "deps": [],
+    "endpoints": []
+   },
+   {
+    "name": "webset_item_summary",
+    "kind": "function",
+    "signature": "def webset_item_summary(item: dict) -> str:",
+    "line": 3521,
+    "purpose": "One-line '[type] name \u2014 description' summary of an item.",
+    "deps": [
+     "webset_item_name",
+     "webset_item_type"
+    ],
+    "endpoints": []
+   },
+   {
+    "name": "webset_items_all",
+    "kind": "function",
+    "signature": "def webset_items_all(webset_id, *, page_size=100, source_id=None):",
+    "line": 3538,
+    "purpose": "Page through nextCursor until exhausted and return one flat list of all items.",
+    "deps": [
+     "webset_items"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/items"
+    ]
+   },
+   {
+    "name": "webset_snapshot",
+    "kind": "function",
+    "signature": "def webset_snapshot(webset_id, *, page_size=100):",
+    "line": 3566,
+    "purpose": "Client-side snapshot of items keyed by URL with UTC taken_at for later diffing.",
+    "deps": [
+     "webset_items_all"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/items"
+    ]
+   },
+   {
+    "name": "webset_snapshot_diff",
+    "kind": "function",
+    "signature": "def webset_snapshot_diff(snap_a, snap_b):",
+    "line": 3603,
+    "purpose": "Diff two snapshots by URL into added/removed/kept/changed (description change).",
+    "deps": [],
+    "endpoints": []
+   },
+   {
+    "name": "webset_eval_review",
+    "kind": "function",
+    "signature": "def webset_eval_review(webset_id, *, limit=100, cursor=None, timeout=45.0):",
+    "line": 3653,
+    "purpose": "Render a markdown review of items' criterion evaluations with per-satisfaction counts.",
+    "deps": [
+     "webset_items"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/items"
+    ]
+   },
+   {
+    "name": "webset_item_get",
+    "kind": "function",
+    "signature": "def webset_item_get(webset_id, item_id):",
+    "line": 3703,
+    "purpose": "Fetch a single webset item.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/items/{item_id}"
+    ]
+   },
+   {
+    "name": "webset_item_delete",
+    "kind": "function",
+    "signature": "def webset_item_delete(webset_id, item_id):",
+    "line": 3709,
+    "purpose": "Remove an item from a webset.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/items/{item_id}"
+    ]
+   },
+   {
+    "name": "webset_add_search",
+    "kind": "function",
+    "signature": "def webset_add_search(webset_id, query, *, count=10, entity=None, criteria=None, exclude=None, scope=None, recall=False, max_people_per_company=None, behavior=\"override\", metadata=None):",
+    "line": 3716,
+    "purpose": "Add another search run to an existing webset (params at top level, not nested under 'search').",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/searches"
+    ]
+   },
+   {
+    "name": "webset_search_status",
+    "kind": "function",
+    "signature": "def webset_search_status(webset_id, search_id):",
+    "line": 3749,
+    "purpose": "Get status/progress of a specific search run.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/searches/{search_id}"
+    ]
+   },
+   {
+    "name": "webset_recall",
+    "kind": "function",
+    "signature": "def webset_recall(webset_id, *, search_id=None, timeout=45.0):",
+    "line": 3755,
+    "purpose": "Extract the recall (total-match estimate) block for a search into a compact summary.",
+    "deps": [
+     "webset_get",
+     "webset_search_status"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}",
+     "/v0/websets/{webset_id}/searches/{search_id}"
+    ]
+   },
+   {
+    "name": "webset_search_cancel",
+    "kind": "function",
+    "signature": "def webset_search_cancel(webset_id, search_id):",
+    "line": 3816,
+    "purpose": "Cancel a specific running search on a webset.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/searches/{search_id}/cancel"
+    ]
+   },
+   {
+    "name": "webset_wait",
+    "kind": "function",
+    "signature": "def webset_wait(webset_id, *, search_id=None, wait_enrichments=True, timeout=600, poll_interval=5.0):",
+    "line": 3822,
+    "purpose": "Poll a webset (or one search) until terminal, then return it with embedded items.",
+    "deps": [
+     "webset_search_status",
+     "webset_get",
+     "_poll_until",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}",
+     "/v0/websets/{webset_id}/searches/{search_id}"
+    ]
+   },
+   {
+    "name": "webset_enrich",
+    "kind": "function",
+    "signature": "def webset_enrich(webset_id, description, *, format=None, options=None, metadata=None):",
+    "line": 3858,
+    "purpose": "Create an enrichment job that produces one extra field per item.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/enrichments"
+    ]
+   },
+   {
+    "name": "enrichment_get",
+    "kind": "function",
+    "signature": "def enrichment_get(webset_id, enrichment_id):",
+    "line": 3880,
+    "purpose": "Fetch the current state of an enrichment job.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/enrichments/{enrichment_id}"
+    ]
+   },
+   {
+    "name": "enrichment_delete",
+    "kind": "function",
+    "signature": "def enrichment_delete(webset_id, enrichment_id):",
+    "line": 3886,
+    "purpose": "Delete an enrichment job.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/enrichments/{enrichment_id}"
+    ]
+   },
+   {
+    "name": "enrichment_cancel",
+    "kind": "function",
+    "signature": "def enrichment_cancel(webset_id, enrichment_id):",
+    "line": 3892,
+    "purpose": "Cancel a running enrichment job.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/enrichments/{enrichment_id}/cancel"
+    ]
+   },
+   {
+    "name": "enrichment_update",
+    "kind": "function",
+    "signature": "def enrichment_update(webset_id, enrichment_id, *, description=None, format=None, options=None, metadata=None):",
+    "line": 3898,
+    "purpose": "PATCH an enrichment's description/format/options/metadata.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/websets/{webset_id}/enrichments/{enrichment_id}"
+    ]
+   }
+  ],
+  "defects": [
+   {
+    "line": 3697,
+    "severity": "medium",
+    "category": "return-shape / contract drift",
+    "description": "webset_eval_review's docstring (lines 3668-3669) promises keys 'item_count' and 'by_satisfied', but the actual return (lines 3697-3698) uses 'count' and 'by_satisfaction'. Any caller following the documented shape gets KeyError on result['item_count'] or result['by_satisfied'].",
+    "suggestion": "Rename the returned keys to match the docstring (item_count, by_satisfied) or update the docstring to 'count'/'by_satisfaction'."
+   },
+   {
+    "line": 3653,
+    "severity": "low",
+    "category": "dead parameter",
+    "description": "webset_eval_review declares timeout=45.0 but never uses it; the only API call is webset_items(webset_id, limit=limit, cursor=cursor), which does not accept a timeout. The param is silently ignored.",
+    "suggestion": "Remove the unused timeout param or plumb a timeout into webset_items/_request."
+   },
+   {
+    "line": 3755,
+    "severity": "low",
+    "category": "dead parameter",
+    "description": "webset_recall declares timeout=45.0 but never uses it; its two API calls, webset_get(webset_id) and webset_search_status(webset_id, search_id), take no timeout argument. The param is silently ignored.",
+    "suggestion": "Remove the unused timeout param or add timeout support to the underlying helpers."
+   },
+   {
+    "line": 3840,
+    "severity": "low",
+    "category": "edge-case premature return",
+    "description": "webset_wait's non-search_id branch returns immediately when 'not searches' (empty list). For a freshly created webset whose searches array is transiently empty, this returns before any search has been registered, so the wait effectively no-ops instead of polling to terminal.",
+    "suggestion": "Only treat an empty searches list as terminal when the webset status is paused/cancelled/failed; otherwise keep polling."
+   },
+   {
+    "line": 3555,
+    "severity": "low",
+    "category": "unbounded loop / growth",
+    "description": "webset_items_all uses a 'while True' that keeps appending to 'items' and advancing cursor until hasMore is false. There is no duplicate-page / progress guard: if the API ever repeats a cursor or keeps hasMore true, the loop is infinite and the list grows without bound. Same class of risk applies to webset_snapshot which holds the full list in memory.",
+    "suggestion": "Add a safety bound (max pages, or stop when a nextCursor repeats) to prevent infinite pagination."
+   },
+   {
+    "line": 3893,
+    "severity": "low",
+    "category": "inconsistent field handling",
+    "description": "In enrichment_update (and webset_update/webset_enrich), description/format/options are guarded by truthiness ('if description:') while metadata uses 'is not None'. A caller passing empty string '' or None to clear description/format silently omits it from the PATCH body, so it cannot be cleared, unlike metadata. Minor and likely intentional, but inconsistent within the same call.",
+    "suggestion": "If clearing fields is a supported use case, gate all fields on 'is not None' rather than truthiness."
+   }
+  ],
+  "shared_state": [
+   "WEBSETS_API_URL (read-only immutable str base URL used by every endpoint call in this section)",
+   "_API_KEY_CACHE (mutable dict, read+written transitively via _get_api_key() on each API call)",
+   "_API_KEY_NAMES (module-level list, read via _get_api_key/_seek_api_key)",
+   "_CLIENT and _WORKERS (mutable globals lazily created/written transitively via _request() -> _http()/_pool())"
+  ]
+ },
+ "a06258eea861d137f": {
+  "module": "exa (src/exa/__init__.py)",
+  "section": "exa-monitors (lines 2921-3307)",
+  "line_range": "2921-3307",
+  "functions": [
+   {
+    "name": "monitor_create",
+    "kind": "function",
+    "line": 2923,
+    "signature": "def monitor_create(query, *, name=None, period=\"24h\", num_results=5, output_schema=None, metadata=None, webhook_url=None, events=None, filter_empty_results=False, with_text=False, max_characters=None, text_verbosity=None, with_highlights=False, highlights_query=None, highlights_max_characters=None, with_summary=False, summary_query=None, summary_schema=None, extras_links=0, extras_image_links=0, extras_rich_links=0, extras_rich_image_links=0, extras_code_blocks=0, max_age_hours=None, subpages=0, subpage_target=None, livecrawl=None, livecrawl_timeout=None, include_sections=None, exclude_sections=None, include_html_tags=False, timeout=45.0)",
+    "purpose": "Build the search-monitor create payload (search + interval trigger + webhook) and POST it.",
+    "deps": [
+     "_get_api_key",
+     "_contents_block",
+     "_request",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/monitors"
+    ],
+    "notes": "Raises ExaError if webhook_url missing (line 2979-2984). The timeout=45.0 parameter is ignored; request hardcodes timeout=30 (line 2998)."
+   },
+   {
+    "name": "monitor_list",
+    "kind": "function",
+    "line": 3001,
+    "signature": "def monitor_list(*, status=None, name=None, metadata=None, limit=50, cursor=None)",
+    "purpose": "List monitors with optional status/name/metadata filters.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors"
+    ],
+    "notes": "Metadata filters sent as metadata[k]=v query params (line 3007); assumes metadata is a dict."
+   },
+   {
+    "name": "monitor_get",
+    "kind": "function",
+    "line": 3012,
+    "signature": "def monitor_get(monitor_id)",
+    "purpose": "Fetch a single monitor by id.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}"
+    ]
+   },
+   {
+    "name": "monitor_update",
+    "kind": "function",
+    "line": 3017,
+    "signature": "def monitor_update(monitor_id, **fields)",
+    "purpose": "Patch a monitor with arbitrary top-level fields as the JSON body.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}"
+    ]
+   },
+   {
+    "name": "monitor_delete",
+    "kind": "function",
+    "line": 3022,
+    "signature": "def monitor_delete(monitor_id)",
+    "purpose": "Delete a monitor permanently.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}"
+    ]
+   },
+   {
+    "name": "monitor_trigger",
+    "kind": "function",
+    "line": 3027,
+    "signature": "def monitor_trigger(monitor_id, timeout=45.0)",
+    "purpose": "Trigger an immediate monitor run.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}/trigger"
+    ]
+   },
+   {
+    "name": "monitor_runs",
+    "kind": "function",
+    "line": 3032,
+    "signature": "def monitor_runs(monitor_id, *, limit=50, cursor=None)",
+    "purpose": "List runs of a monitor (reverse chronological).",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}/runs"
+    ]
+   },
+   {
+    "name": "monitor_run_get",
+    "kind": "function",
+    "line": 3039,
+    "signature": "def monitor_run_get(monitor_id, run_id)",
+    "purpose": "Fetch a single monitor run including its output.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}/runs/{run_id}"
+    ]
+   },
+   {
+    "name": "monitor_wait",
+    "kind": "function",
+    "line": 3044,
+    "signature": "def monitor_wait(monitor_id, run_id=None, *, timeout=300, poll_interval=3.0)",
+    "purpose": "Poll a run (by run_id or latest-run lookup) until terminal state; raise ExaError on timeout.",
+    "deps": [
+     "monitor_run_get",
+     "_current_monitor_run",
+     "_poll_until",
+     "ExaError",
+     "time"
+    ],
+    "endpoints": [],
+    "notes": "Terminal = status in (completed, failed, cancelled) (line 3049); failed/cancelled returned like success. Timeout error message reads 'monitor run None' when run_id omitted (line 3056)."
+   },
+   {
+    "name": "_current_monitor_run",
+    "kind": "function",
+    "line": 3060,
+    "signature": "def _current_monitor_run(monitor_id)",
+    "purpose": "Return the newest run dict, or {} if none.",
+    "deps": [
+     "monitor_runs"
+    ],
+    "endpoints": [],
+    "notes": "Assumes list payload is a dict with 'data' key; unlike monitor_check it has no list-shape guard."
+   },
+   {
+    "name": "monitor_batch",
+    "kind": "function",
+    "line": 3065,
+    "signature": "def monitor_batch(action, *, name=None, status=None, metadata=None, dry_run=True, limit=50)",
+    "purpose": "Bulk delete/pause/unpause monitors matching a filter; validates action and requires at least one filter.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/monitors/batch"
+    ]
+   },
+   {
+    "name": "_CADENCE",
+    "kind": "constant",
+    "line": 3092,
+    "signature": "_CADENCE = \"cadence\"",
+    "purpose": "String constant for the 'cadence' body key; never referenced anywhere in the file (dead).",
+    "deps": []
+   },
+   {
+    "name": "_BEHAVIOR",
+    "kind": "constant",
+    "line": 3093,
+    "signature": "_BEHAVIOR = \"behavior\"",
+    "purpose": "String constant for the 'behavior' body key; never referenced anywhere in the file (dead).",
+    "deps": []
+   },
+   {
+    "name": "monitor_check",
+    "kind": "function",
+    "line": 3096,
+    "signature": "def monitor_check(monitor_id, *, trigger_if_empty: bool = True, timeout: float = 45.0)",
+    "purpose": "Return the latest monitor run's output; trigger a new run if the latest run has no output.",
+    "deps": [
+     "monitor_runs",
+     "monitor_trigger"
+    ],
+    "endpoints": [
+     "/monitors/{monitor_id}/runs",
+     "/monitors/{monitor_id}/trigger"
+    ],
+    "notes": "Docstring (lines 3112-3115) promises a 'latest_run' key and mentions a nonexistent param 'auto_if_empty'; actual return keys are monitor_id/has_run/run_id/run_output/triggered. Triggers when runs_data[0] lacks output even if an older completed run has output."
+   },
+   {
+    "name": "wmonitor_create",
+    "kind": "function",
+    "line": 3142,
+    "signature": "def wmonitor_create(webset_id, *, cron, timezone=\"Etc/UTC\", count=10, query=None, criteria=None, entity=None, behavior=\"append\", metadata=None, timeout=45.0)",
+    "purpose": "Create a webset monitor with a cron cadence and search behavior under the websets base URL.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors"
+    ],
+    "notes": "Effective HTTP timeout is min(timeout, 30) (line 3175), silently capping the caller's timeout."
+   },
+   {
+    "name": "wmonitor_list",
+    "kind": "function",
+    "line": 3178,
+    "signature": "def wmonitor_list(*, webset_id=None, limit=25, cursor=None)",
+    "purpose": "List webset monitors, optionally filtered by websetId.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors"
+    ]
+   },
+   {
+    "name": "wmonitor_get",
+    "kind": "function",
+    "line": 3192,
+    "signature": "def wmonitor_get(monitor_id)",
+    "purpose": "Fetch one webset monitor by id.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors/{monitor_id}"
+    ]
+   },
+   {
+    "name": "wmonitor_update",
+    "kind": "function",
+    "line": 3198,
+    "signature": "def wmonitor_update(monitor_id, *, status=None, cadence=None, behavior=None, metadata=None)",
+    "purpose": "Patch a webset monitor (status/cadence/behavior/metadata); metadata uses 'is not None' so an empty dict is sent.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors/{monitor_id}"
+    ]
+   },
+   {
+    "name": "wmonitor_delete",
+    "kind": "function",
+    "line": 3220,
+    "signature": "def wmonitor_delete(monitor_id)",
+    "purpose": "Delete a webset monitor permanently.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors/{monitor_id}"
+    ]
+   },
+   {
+    "name": "wmonitor_runs",
+    "kind": "function",
+    "line": 3226,
+    "signature": "def wmonitor_runs(monitor_id, *, limit=25, cursor=None)",
+    "purpose": "List historical runs of a webset monitor.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors/{monitor_id}/runs"
+    ]
+   },
+   {
+    "name": "wmonitor_run_get",
+    "kind": "function",
+    "line": 3234,
+    "signature": "def wmonitor_run_get(monitor_id, run_id)",
+    "purpose": "Get one webset-monitor run's details.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/monitors/{monitor_id}/runs/{run_id}"
+    ]
+   },
+   {
+    "name": "agent_list",
+    "kind": "function",
+    "line": 3243,
+    "signature": "def agent_list(*, status=None, limit=50, cursor=None)",
+    "purpose": "List prior agent runs with status/usage/cost (in line range, outside monitor focus).",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/agent/runs"
+    ]
+   },
+   {
+    "name": "agent_get",
+    "kind": "function",
+    "line": 3261,
+    "signature": "def agent_get(run_id)",
+    "purpose": "Fetch a single agent run snapshot.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/agent/runs/{run_id}"
+    ]
+   },
+   {
+    "name": "agent_delete",
+    "kind": "function",
+    "line": 3266,
+    "signature": "def agent_delete(run_id)",
+    "purpose": "Delete a completed agent run.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/agent/runs/{run_id}"
+    ]
+   },
+   {
+    "name": "agent_cancel",
+    "kind": "function",
+    "line": 3271,
+    "signature": "def agent_cancel(run_id)",
+    "purpose": "Request cancellation of a running agent run.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/agent/runs/{run_id}/cancel"
+    ]
+   },
+   {
+    "name": "agent_events",
+    "kind": "function",
+    "line": 3276,
+    "signature": "def agent_events(run_id, *, limit=None, cursor=None)",
+    "purpose": "Fetch the ordered event list of an agent run with pagination.",
+    "deps": [
+     "_get_api_key",
+     "_request"
+    ],
+    "endpoints": [
+     "/agent/runs/{run_id}/events"
+    ]
+   }
+  ],
+  "defects": [
+   {
+    "line": 2998,
+    "severity": "medium",
+    "category": "dead-parameter/contract-drift",
+    "description": "monitor_create's `timeout=45.0` keyword is accepted (line 2934) but never used; the request hardcodes timeout=30. A caller passing timeout=120 gets a 30s request that can raise httpx.TimeoutException earlier than requested, and the default is also not the documented 45s.",
+    "suggestion": "Pass timeout=timeout to _request (or drop the parameter)."
+   },
+   {
+    "line": 3113,
+    "severity": "medium",
+    "category": "return-shape/doc-drift",
+    "description": "monitor_check docstring promises a dict with 'latest_run' (and references nonexistent parameter 'auto_if_empty' at line 3114); the actual returns are {monitor_id, has_run, run_id, run_output, triggered} with no 'latest_run' key in either branch (lines 3123-3129, 3135-3141). Callers keying off documented fields get KeyError/None.",
+    "suggestion": "Add 'latest_run' (the full run dict) to both return dicts or fix the docstring; rename auto_if_empty to trigger_if_empty."
+   },
+   {
+    "line": 3122,
+    "severity": "medium",
+    "category": "logic/doc-deviation",
+    "description": "monitor_check triggers a new run whenever runs_data[0] has no output, even when an older completed run with output exists, and even while a run is in progress. Docstring (line 3103) and jobs.md say it should only trigger when the monitor has NO completed run, so e.g. runs=[running, completed-with-output] triggers a duplicate/paid run contrary to documented semantics.",
+    "suggestion": "Scan the fetched runs for a completed run with output first; only trigger if none exists (and ideally skip if latest is still 'running')."
+   },
+   {
+    "line": 3092,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "Module constants _CADENCE and _BEHAVIOR (lines 3092-3093) are defined but never referenced anywhere in the file; wmonitor_create/wmonitor_update use the literals 'cadence'/'behavior' inline.",
+    "suggestion": "Remove them or use them in wmonitor_create/wmonitor_update."
+   },
+   {
+    "line": 3049,
+    "severity": "low",
+    "category": "error-classification",
+    "description": "monitor_wait treats 'failed'/'cancelled' as terminal success and just returns the run dict; jobs.md explicitly notes 'a terminal failed/cancelled state is not success' but the API gives callers no signal beyond manually checking status (contrast agent() which raises via raise_on_failed). The timeout error also renders as 'monitor run None did not finish' when run_id is None (line 3056).",
+    "suggestion": "Return or raise distinctly for failed/cancelled, or document that callers must inspect run['status']; use monitor_id in the timeout message when run_id is None."
+   },
+   {
+    "line": 2955,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "monitor_create does a local `import time` that is both redundant (time is imported at module scope, line 12) and unused in the function body.",
+    "suggestion": "Delete the local import."
+   },
+   {
+    "line": 2947,
+    "severity": "low",
+    "category": "doc-drift",
+    "description": "monitor_create docstring says 'num_results: result count per run (default API 10)' but the client default is num_results=5 (line 2923), so every call that omits it sends 5, not the API default.",
+    "suggestion": "Fix the docstring to state the client default of 5."
+   },
+   {
+    "line": 3175,
+    "severity": "low",
+    "category": "silent-default-override",
+    "description": "wmonitor_create computes timeout=min(timeout, 30) with default timeout=45.0, so the effective HTTP timeout is always 30s and any caller-supplied value above 30 is silently reduced; the docstring does not document this cap.",
+    "suggestion": "Pass timeout through unchanged or document the 30s cap."
+   }
+  ],
+  "shared_state": []
+ },
+ "a2161d7246170ccde": {
+  "module": "exa",
+  "section": "exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line_range": "554-1260",
+  "functions": [
+   {
+    "name": "Result",
+    "kind": "class",
+    "signature": "class Result:",
+    "line": 559,
+    "purpose": "Per-result container wrapping a raw /search record with rich JSON-friendly fields; methods: __init__(raw, index=0), snippet, to_agent, to_dict, to_entity(index=0), entities_by_type, subpage_count, subpage_titles, subpage_urls, subpage(index=0), to_subpages, domain, hostname, __repr__",
+    "deps": [
+     "_domain_of",
+     "entity_type",
+     "entity_summary"
+    ],
+    "notes": "No truncation at range boundary; class ends at line 707. subpage()/to_entity() silently fall back to element 0 for out-of-range indices (by design, per docstring \"First (or indexed)\")."
+   },
+   {
+    "name": "_domain_of",
+    "kind": "function",
+    "signature": "def _domain_of(url: str) -> str:",
+    "line": 709,
+    "purpose": "Naive registrable-domain extraction: strips scheme/www, keeps last two labels; no public-suffix list",
+    "deps": []
+   },
+   {
+    "name": "entity_type",
+    "kind": "function",
+    "signature": "def entity_type(entity: dict) -> str:",
+    "line": 727,
+    "purpose": "Discriminates a raw entities[] record kind (company/person/publication), returns 'unknown' when absent",
+    "deps": []
+   },
+   {
+    "name": "_ENTITY_PROFILE_KEYS",
+    "kind": "constant",
+    "signature": "_ENTITY_PROFILE_KEYS = {\"company\": (\"name\", \"foundedYear\", \"description\", \"workforce\", \"headquarters\", \"financials\", \"webTraffic\", \"research\"), \"person\": (...), \"publication\": (...)}",
+    "line": 738,
+    "purpose": "Per-entity-type list of profile fields to surface in entity_summary",
+    "deps": []
+   },
+   {
+    "name": "entity_summary",
+    "kind": "function",
+    "signature": "def entity_summary(entity: dict) -> dict:",
+    "line": 748,
+    "purpose": "Normalizes one raw entities[] record: stable library id, type, name (from name or title), known profile fields flattened, raw record under 'raw'",
+    "deps": [
+     "_ENTITY_PROFILE_KEYS",
+     "entity_type"
+    ]
+   },
+   {
+    "name": "entities",
+    "kind": "function",
+    "signature": "def entities(*, results=None) -> List[dict]:",
+    "line": 779,
+    "purpose": "Aggregates normalized entity profiles across Result-like objects or raw dicts, deduplicated by library id (fallback name|type key)",
+    "deps": [
+     "entity_summary"
+    ]
+   },
+   {
+    "name": "_ENTITY_TYPES",
+    "kind": "constant",
+    "signature": "_ENTITY_TYPES = (\"company\", \"person\", \"publication\", \"entity\")",
+    "line": 814,
+    "purpose": "Intended set of entity kinds; never referenced anywhere in the module (dead constant)",
+    "deps": []
+   },
+   {
+    "name": "entity_search",
+    "kind": "function",
+    "signature": "def entity_search(query: str, *, num_results: int = 8, mode: str = \"auto\", category: Optional[str] = None, search_type: Optional[str] = None, include_domains=None, exclude_domains=None, dedupe: bool = True, timeout: float = 45.0) -> dict:",
+    "line": 817,
+    "purpose": "Client-side composite: runs search(), collects all entities[] records across results, normalizes + dedupes into a roster ranked by occurrence count; returns {query, category, entity_count, entities, total_cost}",
+    "deps": [
+     "search",
+     "entity_summary"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "dedupe parameter is accepted but ignored (always dedupes). Broad 'except Exception: continue' swallows entity_summary failures silently."
+   },
+   {
+    "name": "_KIND_SCHEMA",
+    "kind": "constant",
+    "signature": "_KIND_SCHEMA = {\"company\": (\"CompanyEntity\", (fields...)), \"person\": (\"PersonEntity\", (...)), \"publication\": (\"ResearchPaperEntity\", (...))}",
+    "line": 879,
+    "purpose": "Entity kind -> (schema model name, known attribute tuple) map for entity_schema",
+    "deps": []
+   },
+   {
+    "name": "entity_schema",
+    "kind": "function",
+    "signature": "def entity_schema(entity: Optional[dict] = None) -> dict:",
+    "line": 892,
+    "purpose": "Exploration tool: reports which known attributes of an entity type are present/absent in a sample plus unexpected extra keys and their JSON kinds; discovery mode when no sample",
+    "deps": [
+     "_KIND_SCHEMA",
+     "entity_type"
+    ]
+   },
+   {
+    "name": "_STOPWORDS",
+    "kind": "constant",
+    "signature": "_STOPWORDS = {\"the\", \"a\", ... ~90 English stopwords ...}",
+    "line": 958,
+    "purpose": "Built-in stopword set merged with caller extras by _tokenise",
+    "deps": []
+   },
+   {
+    "name": "_tokenise",
+    "kind": "function",
+    "signature": "def _tokenise(text: str) -> List[str]:",
+    "line": 973,
+    "purpose": "Lowers text, replaces _-/ with spaces, extracts [a-z][a-z0-9]{2,} tokens not in _STOPWORDS",
+    "deps": [
+     "_STOPWORDS"
+    ]
+   },
+   {
+    "name": "top_terms",
+    "kind": "function",
+    "signature": "def top_terms(query: str, *, num_results: int = 10, mode: str = \"auto\", category: Optional[str] = None, exclude_domains=None, stopwords: Optional[set] = None, top_n: int = 12, timeout: float = 45.0) -> dict:",
+    "line": 979,
+    "purpose": "Client-side TF/domain clustering over a search(): top title terms and per-domain result counts; returns {query, total_results, top_terms, domain_clusters, total_cost}",
+    "deps": [
+     "search",
+     "_tokenise"
+    ],
+    "endpoints": [
+     "/search"
+    ]
+   },
+   {
+    "name": "SearchResults",
+    "kind": "class",
+    "signature": "class SearchResults:",
+    "line": 1029,
+    "purpose": "List-like container of Result + request metadata (request_id, cost_dollars, output, resolved_search_type, search_time_ms); methods: search_time, total_cost, cost_breakdown, cost_report, __iter__/__getitem__/__len__/__repr__, to_dicts, to_agent, to_meta, to_json(indent=2, *, include_meta=False), to_markdown(*, with_metadata=True), answer, answer_grounding, entities, domains, top_domains(n=10), to_dataframe(*, include_entities=False), to_xlsx(path, *, include_entities=False)",
+    "deps": [
+     "entities",
+     "json"
+    ],
+    "notes": "Class ends at line 1257, fully inside range; next top-level def (_category_canon) at 1263. to_dataframe/to_xlsx lazily import pandas/openpyxl."
+   }
+  ],
+  "shared_state": [
+   "_STOPWORDS (read by _tokenise; never mutated)",
+   "_KIND_SCHEMA (read by entity_schema; never mutated)",
+   "_ENTITY_PROFILE_KEYS (read by entity_summary; never mutated)",
+   "This section performs no writes to any module-level global; no thread-safety issues in-state"
+  ],
+  "defects": [
+   {
+    "line": 1024,
+    "severity": "medium",
+    "category": "contract-drift",
+    "description": "top_terms() docstring (lines 1007-1008) promises domain_clusters entries shaped {\"domain\",\"results\"} but the actual key returned is \"count\" ({\"domain\": d, \"count\": c}). Downstream code or skill instructions following the documented shape get KeyError on 'results'.",
+    "suggestion": "Either rename the returned key to 'results' or fix the docstring to 'count'."
+   },
+   {
+    "line": 931,
+    "severity": "medium",
+    "category": "wrong-data",
+    "description": "entity_schema() silently coerces any unsupported entity kind that HAS properties to typ='company' (line 931). For a record with type 'entity' or 'organization' (both are real Exa kinds; 'entity' is even in the _ENTITY_TYPES tuple) it returns type='company', schema_model='CompanyEntity', and presence/absence computed against company fields - the returned 'type' no longer matches entity_type(entity), mislabeling the entity and its missing/present lists.",
+    "suggestion": "Return the original kind in 'type' and report the known-attribute surface for an unrecognized kind instead of forcing the company schema (or add an explicit 'coerced_from' field)."
+   },
+   {
+    "line": 826,
+    "severity": "medium",
+    "category": "dead-parameter",
+    "description": "entity_search() accepts dedupe: bool = True but never reads it; deduplication always happens, so dedupe=False still dedupes - a silent contract violation for callers who pass it.",
+    "suggestion": "Honor dedupe=False (skip roster dedup, keep all records) or drop the parameter."
+   },
+   {
+    "line": 857,
+    "severity": "low",
+    "category": "swallowed-error",
+    "description": "entity_search() wraps entity_summary() in 'except Exception: continue' with no log; malformed entity records (e.g. a non-dict entry in entities[]) are dropped silently, so the roster can quietly lose entities and entity_count is under-reported with no trace.",
+    "suggestion": "Narrow to (AttributeError, TypeError), or count skipped records and surface it in the result dict."
+   },
+   {
+    "line": 863,
+    "severity": "low",
+    "category": "wrong-counting",
+    "description": "_occurrences counts entity records, not distinct source pages: if one result carries two records that share a dedupe key (no library id, same name+type), a single page inflates the count to 2, contradicting the docstrings 'how many distinct result pages mentioned each entity' / 'number of source pages that surfaced it'.",
+    "suggestion": "Count per-result distinctness (e.g. add one per Result that contains the key) or reword the docstring to 'occurrences'."
+   },
+   {
+    "line": 919,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "entity_schema() discovery check 'if typ in (\"unknown\", \"\") and not props:' - the '' branch is unreachable: entity_type() always returns at least 'unknown' (str(t or 'unknown')), never an empty string.",
+    "suggestion": "Simplify to 'if typ == \"unknown\" and not props:'."
+   },
+   {
+    "line": 814,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "_ENTITY_TYPES is defined but never referenced anywhere in the module (grep-verified); it is also not part of __all__.",
+    "suggestion": "Use it (e.g. as the set of known kinds in entity_schema) or delete it."
+   },
+   {
+    "line": 691,
+    "severity": "low",
+    "category": "wrong-data",
+    "description": "Result.domain (line 691) and Result.hostname (line 696) fall back to self.id when url is empty; Exa result ids are opaque hex strings, not URLs, so _domain_of() returns the whole id as a fake 'domain' (e.g. 'a3f9...') that then pollutes SearchResults.domains()/top_domains() and top_terms() domain_clusters.",
+    "suggestion": "Return '' when url is missing instead of feeding the id through _domain_of."
+   },
+   {
+    "line": 1129,
+    "severity": "low",
+    "category": "edge-case",
+    "description": "SearchResults.to_agent() uses 'if cost:' so a legitimate cost of 0.0 (free/zero-cost request) is omitted from the output, while __repr__ and total_cost() treat 0.0 as a real value - inconsistent handling.",
+    "suggestion": "Use 'if cost is not None:'."
+   },
+   {
+    "line": 592,
+    "severity": "low",
+    "category": "edge-case",
+    "description": "Result.to_agent() only date-truncates when the time part startswith '00:00:00'; midnight timestamps with a shorter or fractional time (e.g. '2024-01-01T00:00' or '2024-01-01T00:00.000Z') keep the time part, violating the docstring promise 'Date keeps time when it is not midnight'.",
+    "suggestion": "Compare the parsed time portion (e.g. hour/minute/second all zero) rather than string prefix."
+   }
+  ]
+ },
+ "a4c33e5f8c4292d83": {
+  "module": "exa/__init__.py",
+  "section": "exa-streaming",
+  "line_range": "2611-2920",
+  "functions": [
+   {
+    "name": "stream_answer",
+    "kind": "function",
+    "signature": "stream_answer(query, *, output_schema=None, text=False, citation_format=None, timeout=90.0, collect_meta=True)",
+    "line": 2615,
+    "purpose": "SSE-stream a citation-grounded /answer, yielding text deltas then (default) one trailing meta dict with text/citations/cost/request_id.",
+    "deps": [
+     "_get_api_key",
+     "DEFAULT_API_URL",
+     "ExaError",
+     "httpx.stream",
+     "json"
+    ],
+    "endpoints": [
+     "/answer"
+    ],
+    "notes": "Uses httpx.stream directly (not the shared _request/_http engine), so no retries/backoff on 429/5xx; raises a single bare ExaError for any status>=400."
+   },
+   {
+    "name": "stream_answer_source",
+    "kind": "function",
+    "signature": "stream_answer_source(query, *, output_schema=None, citation_format=None, timeout=90.0)",
+    "line": 2692,
+    "purpose": "SSE-stream /answer as typed event dicts (delta/citations/cost/done) with per-chunk char/token metering; buffers multi-line data frames.",
+    "deps": [
+     "_get_api_key",
+     "DEFAULT_API_URL",
+     "ExaError",
+     "httpx.stream",
+     "json"
+    ],
+    "endpoints": [
+     "/answer"
+    ],
+    "notes": "Most robust of the three: accumulates multi-line SSE data frames into a buffer before json.loads. text_parts in _handle_frame's nonlocal list is only mutated (append), so the nonlocal binding is unnecessary but harmless."
+   },
+   {
+    "name": "stream_search",
+    "kind": "function",
+    "signature": "stream_search(query, *, num_results=5, mode=\"auto\", search_type=None, category=None, output_schema=None, system_prompt=None, timeout=60.0, **kwargs)",
+    "line": 2807,
+    "purpose": "SSE-stream a synthesized /search (stream=true, output_schema required), yielding text deltas then one final dict with results/output/grounding/citations/text/request_id/search_time_ms.",
+    "deps": [
+     "_get_api_key",
+     "DEFAULT_API_URL",
+     "ExaError",
+     "_mode_args",
+     "_category_canon",
+     "httpx.stream",
+     "json"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Requires output_schema (raises ExaError otherwise). output_out is read from done.output.content, matching the module's Answer.answer convention (line 1181). Extra search fields (include_domains, dates, autoprompt, user_location) forwarded from **kwargs via a whitelist."
+   }
+  ],
+  "shared_state": [],
+  "defects": [
+   {
+    "line": 2624,
+    "severity": "medium",
+    "category": "contract-drift",
+    "description": "stream_answer's docstring documents the trailing meta dict as \"cost_dollars\": {...} (an object), and the rest of the module treats cost as a dict (e.g. costDollars.total, SearchResults.total_cost). But the code (line 2675) collapses it to the scalar float (obj.get('costDollars') or {}).get('total'), so the yielded dict actually carries cost_dollars as a float/None.",
+    "suggestion": "Either emit the raw costDollars dict to match the doc/module convention, or fix the docstring example to show a scalar; a caller that does meta['cost_dollars']['total'] per the documented shape raises TypeError/AttributeError."
+   },
+   {
+    "line": 2834,
+    "severity": "medium",
+    "category": "inconsistent-validation",
+    "description": "stream_search builds body['numResults']=num_results with no client-side validation. search() calls _validate_search_params (line 1488) to enforce 1<=num_results<=100, and references/usage.md (line 32) advertises that 'the client validates num_results from 1-100'. stream_search skips this, so num_results=0/200 reach the API and surface as a raw HTTP 400 wrapped in a generic ExaError rather than the clear client-side ExaError the sibling path gives.",
+    "suggestion": "Call _validate_search_params (or at least range-check num_results) before opening the stream to match search() behavior and the documented client-side validation."
+   },
+   {
+    "line": 2867,
+    "severity": "low",
+    "category": "robustness",
+    "description": "stream_search (and stream_answer at 2659) parse exactly one JSON object per 'data:' SSE line and, on json failure, `continue` (drop the frame). A valid SSE event whose data value spans multiple 'data:' lines (RFC-allowed) is silently discarded, so a large results/citations frame could vanish. The sibling stream_answer_source handles this correctly with a frame_buffer (2766-2783).",
+    "suggestion": "Buffer consecutive 'data:' lines and join with '\\n' before json.loads, as stream_answer_source does, rather than parsing line-by-line."
+   },
+   {
+    "line": 2858,
+    "severity": "low",
+    "category": "contract-drift",
+    "description": "stream_search's Yields docstring (2823-2824) lists the final dict as {results, output, grounding, citations, text, request_id}, but the actual final yield (2907-2915) also includes search_time_ms (captured at 2858/2880). The key is undocumented, so a consumer iterating keys or building a schema off the doc misses it.",
+    "suggestion": "Add 'search_time_ms' to the documented final-dict shape."
+   }
+  ]
+ },
+ "a6b4f274cb74cf0f7": {
+  "module": "exa (exa/src/exa/__init__.py)",
+  "section": "exa-engine-async (lines 1-335)",
+  "line_range": "1-335",
+  "functions": [
+   {
+    "name": "_ENGINE_LIMITS",
+    "kind": "constant",
+    "signature": "_ENGINE_LIMITS = httpx.Limits(max_connections=16, max_keepalive_connections=8)",
+    "line": 26,
+    "purpose": "Shared httpx connection-pool limits (16 total / 8 keep-alive) applied to the process-lifetime client.",
+    "deps": [
+     "httpx.Limits"
+    ]
+   },
+   {
+    "name": "_CLIENT",
+    "kind": "constant",
+    "signature": "_CLIENT = None",
+    "line": 27,
+    "purpose": "Lazy singleton slot for the shared sync httpx.Client.",
+    "deps": []
+   },
+   {
+    "name": "_WORKERS",
+    "kind": "constant",
+    "signature": "_WORKERS = None",
+    "line": 28,
+    "purpose": "Lazy singleton slot for the shared ThreadPoolExecutor.",
+    "deps": []
+   },
+   {
+    "name": "_http",
+    "kind": "function",
+    "signature": "def _http() -> \"httpx.Client\":",
+    "line": 31,
+    "purpose": "Return the process-lifetime httpx.Client, creating it on first use with _ENGINE_LIMITS, redirects on, and an Accept: application/json header.",
+    "deps": [
+     "_CLIENT",
+     "_ENGINE_LIMITS"
+    ],
+    "notes": "Check-then-set lazy init without a lock; docstring claims thread-safety of request() only."
+   },
+   {
+    "name": "_pool",
+    "kind": "function",
+    "signature": "def _pool(n: int = 8) -> ThreadPoolExecutor:",
+    "line": 43,
+    "purpose": "Return the process-lifetime ThreadPoolExecutor, creating it on first use with max_workers=n.",
+    "deps": [
+     "_WORKERS"
+    ],
+    "notes": "Pool size is fixed by whichever call runs first; later requests for more workers are ignored."
+   },
+   {
+    "name": "_retry_after_seconds",
+    "kind": "function",
+    "signature": "def _retry_after_seconds(resp, fallback: float) -> float:",
+    "line": 50,
+    "purpose": "Parse a response Retry-After header (delta-seconds or HTTP-date) into a bounded 0.05-8.0s sleep value, falling back on missing/invalid input.",
+    "deps": [
+     "parsedate_to_datetime",
+     "time.time"
+    ],
+    "notes": "Used only by _request's retry backoff (line 519)."
+   },
+   {
+    "name": "_fanout",
+    "kind": "function",
+    "signature": "def _fanout(jobs, *, concurrency: int = 8):",
+    "line": 67,
+    "purpose": "Submit all (key, thunk) pairs to the shared pool and collect results in submission order as (key, ok, value-or-exception) triples.",
+    "deps": [
+     "_pool"
+    ],
+    "notes": "Job Exceptions are captured into the triple; BaseException is not."
+   },
+   {
+    "name": "_poll_until",
+    "kind": "function",
+    "signature": "def _poll_until(check, *, deadline: float, initial: float = 0.25, cap: float = 4.0):",
+    "line": 82,
+    "purpose": "Blocking poll loop: call check() until it returns a truthy terminal value; back off from initial toward cap with sleep clamped to the remaining deadline; return None when the deadline expires.",
+    "deps": [
+     "time.time",
+     "time.sleep"
+    ],
+    "notes": "Callers (agent/monitor/wait at lines 2415, 3052, 3849) all check `done is None` and raise ExaError, so the None return is handled."
+   },
+   {
+    "name": "_identity_await",
+    "kind": "function",
+    "signature": "def _identity_await(self):",
+    "line": 133,
+    "purpose": "Generator-based __await__ that resolves to the instance itself; attached to result classes (Result, SearchResults, Answer, AgentRun, AgentTrace) at lines 5980-5987 (outside this range).",
+    "deps": []
+   },
+   {
+    "name": "_AsyncDict",
+    "kind": "class",
+    "signature": "class _AsyncDict(dict):",
+    "line": 140,
+    "purpose": "dict subclass that is awaitable; awaiting yields a shallow plain dict copy.",
+    "deps": []
+   },
+   {
+    "name": "_AsyncStr",
+    "kind": "class",
+    "signature": "class _AsyncStr(str):",
+    "line": 150,
+    "purpose": "str subclass that is awaitable; awaiting yields a plain str.",
+    "deps": []
+   },
+   {
+    "name": "_AsyncList",
+    "kind": "class",
+    "signature": "class _AsyncList(list):",
+    "line": 160,
+    "purpose": "list subclass that is awaitable; awaiting yields a plain list copy.",
+    "deps": []
+   },
+   {
+    "name": "_AsyncInt",
+    "kind": "class",
+    "signature": "class _AsyncInt(int):",
+    "line": 170,
+    "purpose": "int subclass that is awaitable; awaiting yields a plain int.",
+    "deps": []
+   },
+   {
+    "name": "_AsyncFloat",
+    "kind": "class",
+    "signature": "class _AsyncFloat(float):",
+    "line": 183,
+    "purpose": "float subclass that is awaitable; awaiting yields a plain float.",
+    "deps": []
+   },
+   {
+    "name": "_AsyncBool",
+    "kind": "class",
+    "signature": "class _AsyncBool(int):",
+    "line": 196,
+    "purpose": "int-subclassed bool that is awaitable; awaiting yields a plain bool; __str__/__repr__ forced to 'True'/'False'.",
+    "deps": []
+   },
+   {
+    "name": "_wrap_result",
+    "kind": "function",
+    "signature": "def _wrap_result(value):",
+    "line": 216,
+    "purpose": "Map a raw return value onto an awaitable twin: dict/str/list/bool/int/float subclasses, pass-through for values that already define __await__, _AsyncScalar otherwise (incl. None).",
+    "deps": [
+     "_AsyncDict",
+     "_AsyncStr",
+     "_AsyncList",
+     "_AsyncBool",
+     "_AsyncInt",
+     "_AsyncFloat",
+     "_AsyncScalar"
+    ],
+    "notes": "isinstance ordering is correct: bool is checked before int (bool is an int subclass)."
+   },
+   {
+    "name": "_AsyncScalar",
+    "kind": "class",
+    "signature": "class _AsyncScalar(object):",
+    "line": 238,
+    "purpose": "Generic awaitable + mostly-transparent proxy for arbitrary objects (incl. None), delegating attribute access, mapping ops, iteration, containers, numeric/string coercions, equality and calling to the wrapped value.",
+    "deps": []
+   },
+   {
+    "name": "_make_async",
+    "kind": "function",
+    "signature": "def _make_async(fn):",
+    "line": 300,
+    "purpose": "Wrap a sync public function so its return value passes through _wrap_result; functools.wraps preserves metadata.",
+    "deps": [
+     "_wrap_result"
+    ],
+    "notes": "Re-imports functools locally (line 302) despite the module-level `import functools as _functools` at line 129."
+   },
+   {
+    "name": "_apply_async_to",
+    "kind": "function",
+    "signature": "def _apply_async_to(module_dict):",
+    "line": 311,
+    "purpose": "Replace every public (non-underscore) plain function in a module dict with its async-aware twin; skips generator/async functions and already-wrapped names. Called once on globals() at line 5988.",
+    "deps": [
+     "_make_async",
+     "_types.FunctionType",
+     "inspect.isgeneratorfunction/isasyncgenfunction/iscoroutinefunction"
+    ]
+   }
+  ],
+  "shared_state": [
+   "_CLIENT (written by _http at lines 33-36)",
+   "_WORKERS (written by _pool at lines 44-46)",
+   "_ENGINE_LIMITS (read-only reference at line 36)"
+  ],
+  "defects": [
+   {
+    "line": 71,
+    "severity": "medium",
+    "category": "wrong-default/contract-drift",
+    "description": "The ThreadPoolExecutor is a process-lifetime singleton sized by the FIRST call to _pool/_fanout. A later _fanout(jobs, concurrency=N) with N > the initial size silently runs on the smaller pool, and max(8, ...) forces at least 8 in-flight jobs even when the caller explicitly passes a smaller concurrency (e.g. concurrency=2 to stay under a rate limit still submits with 8 running). The `concurrency` parameter therefore does not reliably bound parallelism.",
+    "suggestion": "Create/resize the pool when requested max_workers exceeds the current pool size (or document that the first call's concurrency is fixed for the process and honor a lower bound instead of max(8, ...))."
+   },
+   {
+    "line": 72,
+    "severity": "low",
+    "category": "exception-handling",
+    "description": "Only `except Exception` is caught around fut.result() (line 77); a BaseException raised by a job (SystemExit, KeyboardInterrupt) propagates out of _fanout, aborting collection of the remaining already-submitted futures and returning no result at all. Also, if a thunk is not callable, pool.submit raises TypeError mid-loop after earlier futures are already queued, leaving them orphaned and no partial results.",
+    "suggestion": "Catch BaseException per future (or validate thunks up front and catch submit errors per job) so one bad job cannot discard the whole fanout."
+   },
+   {
+    "line": 34,
+    "severity": "low",
+    "category": "thread-safety",
+    "description": "_http (lines 33-35) and _pool (lines 44-46) use unsynchronized check-then-set lazy initialization of the module globals _CLIENT/_WORKERS; two threads racing on first use can each construct a client/pool, and the loser is abandoned (its connections never closed promptly). The _http docstring claims the client is thread-safe but the creation path itself is not atomic.",
+    "suggestion": "Guard creation with a module-level lock (or accept the benign race explicitly in the docstring)."
+   },
+   {
+    "line": 53,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "resp.headers is httpx's case-insensitive headers dict, so resp.headers.get(\"retry-after\") (second operand of the `or`) can never find a header the first .get(\"Retry-After\") missed; the second lookup is a no-op fallback that never adds anything.",
+    "suggestion": "Drop the redundant second .get(\"retry-after\") call."
+   },
+   {
+    "line": 129,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "`import functools as _functools` is never referenced anywhere in the module; _make_async (line 302) and _apply_async_to (line 323) re-import functools inside the function body instead of using the module-level alias.",
+    "suggestion": "Delete the unused module-level alias (or use it in the two functions)."
+   }
+  ]
+ },
+ "a7ac0ffdfc22aec0f": {
+  "module": "brave",
+  "section": "brave-item-normalizers",
+  "line_range": "1091-1780",
+  "functions": [
+   {
+    "name": "_breadcrumb",
+    "kind": "function",
+    "signature": "def _breadcrumb(item: dict) -> Optional[str]:",
+    "line": 1096,
+    "purpose": "Extract a clean 'a / b / c' breadcrumb from a result's meta_url.path, splitting on U+203A or '/'",
+    "deps": []
+   },
+   {
+    "name": "_qa_answer",
+    "kind": "function",
+    "signature": "def _qa_answer(qa: dict) -> str:",
+    "line": 1112,
+    "purpose": "Extract readable Q&A answer text; handles Brave's {text, upvoteCount} dict answer shape",
+    "deps": [
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_qa_upvotes",
+    "kind": "function",
+    "signature": "def _qa_upvotes(qa: dict) -> Optional[int]:",
+    "line": 1126,
+    "purpose": "Surface community upvote count from a Brave Q&A result; int() guarded by try/except",
+    "deps": []
+   },
+   {
+    "name": "_software",
+    "kind": "function",
+    "signature": "def _software(item: dict) -> Optional[dict]:",
+    "line": 1138,
+    "purpose": "Package/registry metadata (name, version, registry, code repo) for web results with subtype == 'software'",
+    "deps": []
+   },
+   {
+    "name": "_recipe_item",
+    "kind": "function",
+    "signature": "def _recipe_item(recipe: dict) -> Optional[dict]:",
+    "line": 1173,
+    "purpose": "Normalise a schema.org Recipe block on a web result (title, ingredients, instructions, rating, thumbnail)",
+    "deps": [
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_product_item",
+    "kind": "function",
+    "signature": "def _product_item(product: dict) -> Optional[dict]:",
+    "line": 1214,
+    "purpose": "Normalise a schema.org Product block (name, price, offers, rating, thumbnail)",
+    "deps": [
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_movie_item",
+    "kind": "function",
+    "signature": "def _movie_item(movie: dict) -> Optional[dict]:",
+    "line": 1245,
+    "purpose": "Normalise a schema.org Movie block (name, release, directors, actors, genre, rating, thumbnail)",
+    "deps": [
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_web_item",
+    "kind": "function",
+    "signature": "def _web_item(item: dict) -> dict:",
+    "line": 1283,
+    "purpose": "Full normalizer for a web result: title/url/site, authors, publisher/logo/paywall, software/qa/recipe/product/movie blocks, breadcrumb, profile, deep links, cluster, location, inline FAQ",
+    "deps": [
+     "_host",
+     "_breadcrumb",
+     "_software",
+     "_recipe_item",
+     "_product_item",
+     "_movie_item",
+     "_clean_html",
+     "_qa_answer",
+     "_qa_upvotes",
+     "_as_list"
+    ],
+    "notes": "Uses _as_list (def at line 1087, previous section) for deep_results.buttons"
+   },
+   {
+    "name": "_age_meta",
+    "kind": "function",
+    "signature": "def _age_meta(age, page_age):",
+    "line": 1434,
+    "purpose": "Derive numeric age_days + kind (relative/date/unknown) from Brave's mixed human/absolute age strings; surface page_age as published_at",
+    "deps": []
+   },
+   {
+    "name": "_news_item",
+    "kind": "function",
+    "signature": "def _news_item(item: dict) -> dict:",
+    "line": 1469,
+    "purpose": "Normalise a news result: title/url/site, age + age_meta + published_at, source/profile, thumbnail, breaking/is_live flags",
+    "deps": [
+     "_host",
+     "_age_meta",
+     "_breadcrumb"
+    ]
+   },
+   {
+    "name": "_discussion_item",
+    "kind": "function",
+    "signature": "def _discussion_item(item: dict) -> dict:",
+    "line": 1497,
+    "purpose": "Normalise a forum/discussion result: forum name, num_answers, score, question, top_comment from item.data",
+    "deps": [
+     "_host",
+     "_breadcrumb",
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_video_item",
+    "kind": "function",
+    "signature": "def _video_item(item: dict) -> dict:",
+    "line": 1520,
+    "purpose": "Normalise a video result: creator/channel, duration, live flag (missing duration), views, author, thumbnail",
+    "deps": [
+     "_host",
+     "_breadcrumb"
+    ]
+   },
+   {
+    "name": "_image_item",
+    "kind": "function",
+    "signature": "def _image_item(item: dict) -> dict:",
+    "line": 1549,
+    "purpose": "Normalise an image result: image_url, width/height (properties with thumbnail fallback), source, thumbnail",
+    "deps": [
+     "_host",
+     "_breadcrumb"
+    ]
+   },
+   {
+    "name": "_faq_item",
+    "kind": "function",
+    "signature": "def _faq_item(item: dict) -> dict:",
+    "line": 1569,
+    "purpose": "Normalise a Brave FAQ Q&A entry: question, html-cleaned answer, source url/site/title/breadcrumb",
+    "deps": [
+     "_clean_html",
+     "_host",
+     "_breadcrumb"
+    ]
+   },
+   {
+    "name": "_location_item",
+    "kind": "function",
+    "signature": "def _location_item(item: dict) -> dict:",
+    "line": 1586,
+    "purpose": "Normalise a raw Brave map/POI result: coordinates, address, current-day + full weekly opening hours, phone, rating, price_range, timezone, pictures",
+    "deps": [
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_loc_lines",
+    "kind": "function",
+    "signature": "def _loc_lines(data) -> list:",
+    "line": 1676,
+    "purpose": "Extract normalised POI rows from a web response's locations.results; filters non-dict entries",
+    "deps": [
+     "_location_item"
+    ]
+   },
+   {
+    "name": "_infobox",
+    "kind": "function",
+    "signature": "def _infobox(data: dict) -> Optional[dict]:",
+    "line": 1683,
+    "purpose": "Normalise the first infobox/knowledge-panel result: title, label, category, long_desc (truncated to 800 chars), attributes, providers, images, ratings",
+    "deps": [
+     "_clean_html"
+    ]
+   },
+   {
+    "name": "_query_diag",
+    "kind": "function",
+    "signature": "def _query_diag(data: dict) -> dict:",
+    "line": 1715,
+    "purpose": "Surface the response's query diagnostics dict (original/altered query, country, bad_results, more_results_available, geo/local fields)",
+    "deps": []
+   },
+   {
+    "name": "_offensive",
+    "kind": "function",
+    "signature": "def _offensive(data: dict) -> Optional[bool]:",
+    "line": 1738,
+    "purpose": "Read top-level extra.might_be_offensive adult-content flag on video/image responses",
+    "deps": []
+   },
+   {
+    "name": "_summarizer",
+    "kind": "function",
+    "signature": "def _summarizer(data: dict) -> Optional[dict]:",
+    "line": 1752,
+    "purpose": "Capture Brave's AI-summary deep link: parse the JSON-encoded summarizer key and rebuild a search.brave.com/summarizer URL",
+    "deps": [],
+    "notes": "Truncated at range end (line 1780): body continues to line 1782 ('elif key is not None: out[\"key\"] = key; return out'). Imports json and urllib.parse locally inside the try block."
+   }
+  ],
+  "defects": [
+   {
+    "line": 1779,
+    "severity": "high",
+    "category": "wrong-data",
+    "description": "_summarizer fallback path builds a malformed deep link: 'https://search.brave.com/summarizer?key=' + _up.urlencode({'key': key}) produces '...summarizer?key=key=%3C...%3E' (the literal 'key=' prefix is doubled because urlencode already emits the key name). The success path at line 1776 correctly uses '?' + urlencode without the hardcoded 'key='. Any string key that fails json.loads (or parses to a non-dict, e.g. a string, triggering AttributeError at line 1769) hits this branch and yields a broken link.",
+    "suggestion": "Use the same construction as line 1776: 'https://search.brave.com/summarizer?' + _up.urlencode({'key': key})"
+   },
+   {
+    "line": 1540,
+    "severity": "medium",
+    "category": "crash-unguarded-conversion",
+    "description": "_video_item does int(v['views']) with only a None check; a non-integer view count (e.g. a formatted or float-like string) raises ValueError/TypeError and crashes the whole normalizer and thus the entire search() result for that mode. _qa_upvotes (line 1131) wraps the identical int() in try/except (TypeError, ValueError), so the codebase itself treats these count fields as potentially non-integer.",
+    "suggestion": "Wrap in try/except (TypeError, ValueError) and return None on failure, mirroring _qa_upvotes."
+   },
+   {
+    "line": 1305,
+    "severity": "low",
+    "category": "inconsistent-type-guarding",
+    "description": "Several normalizers do x = item.get(field) or {} and then call .get() on it with only a truthiness guard, so a truthy non-dict value (e.g. a string) causes AttributeError. _web_item: free_flag = article.get(...) at line 1305 (every other article access at lines 1285/1287/1335 is isinstance-guarded), org.get('name') at line 1349, thumb.get at lines 1353-1355, profile.get at lines 1358-1361. Same pattern in _news_item line 1482 (prof.get), _discussion_item lines 1498/1505/1511 (d.get on item.data), and _recipe_item/_product_item/_movie_item thumbnail access (lines 1203-1204, 1240-1241, 1278-1279).",
+    "suggestion": "Apply the file's standard isinstance(x, dict) guard (as done for creative_work, embedded_video, and opening_hours at line 1607/1619) before calling .get."
+   },
+   {
+    "line": 1684,
+    "severity": "low",
+    "category": "crash-unguarded-assumption",
+    "description": "_infobox does b = ib[0] without checking that the first infobox result is a dict; a non-dict entry makes b.get('title') at line 1689 raise AttributeError. Note _loc_lines (line 1680) filters its items with isinstance(i, dict) but _infobox does not; a non-dict data['infobox'] value also crashes at line 1684 on .get('results').",
+    "suggestion": "Guard with isinstance(ib[0], dict) (return None otherwise) and isinstance(data.get('infobox'), dict)."
+   },
+   {
+    "line": 1695,
+    "severity": "low",
+    "category": "contract-drift",
+    "description": "_infobox silently truncates long_desc to 800 characters (_clean_html(...)[:800]). The skill docs (api.md 'Return shapes', verticals.md) describe the full view as carrying normalized detailed fields without mentioning this cap, so consumers see 'long_desc' that may be cut mid-sentence with no indicator that it was truncated.",
+    "suggestion": "Either document the 800-char cap in SKILL.md/references, or add a 'long_desc_truncated' flag to the returned dict."
+   }
+  ],
+  "shared_state": []
+ },
+ "a907a39556b1cd58a": {
+  "module": "exa/__init__.py",
+  "section": "exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line_range": "336-553",
+  "functions": [
+   {
+    "name": "DEFAULT_API_URL",
+    "kind": "constant",
+    "signature": "DEFAULT_API_URL = \"https://api.exa.ai\"",
+    "line": 337,
+    "purpose": "Default Exa API base URL; also default `base` of _request."
+   },
+   {
+    "name": "WEBSETS_API_URL",
+    "kind": "constant",
+    "signature": "WEBSETS_API_URL = \"https://api.exa.ai/websets\"   # WebSets / imports / webhooks / events / team",
+    "line": 338,
+    "purpose": "Separate base URL for WebSets imports/webhooks/events/team endpoints (/v0/*)."
+   },
+   {
+    "name": "__version__",
+    "kind": "constant",
+    "signature": "__version__ = \"0.19.0\"",
+    "line": 339,
+    "purpose": "Module version string."
+   },
+   {
+    "name": "VALID_CATEGORIES",
+    "kind": "constant",
+    "signature": "VALID_CATEGORIES = { ... 11 category strings ... }",
+    "line": 345,
+    "purpose": "Set of category tokens Exa's API honors (incl. legacy github/code/person/linkedin/research paper); used by _category_canon."
+   },
+   {
+    "name": "SEARCH_TYPES",
+    "kind": "constant",
+    "signature": "SEARCH_TYPES = {\"auto\", \"instant\", \"fast\", \"deep-lite\", \"deep\", \"deep-reasoning\", \"keyword\", \"neural\", \"hybrid\", \"magic\"}",
+    "line": 354,
+    "purpose": "Client-accepted search_type values; validated by _resolve_search_type ('semantic' rejected, 'magic' mapped to deep)."
+   },
+   {
+    "name": "MODES",
+    "kind": "constant",
+    "signature": "MODES = {\"auto\": {\"category\": None, \"search_type\": \"auto\", \"hint\": ...}, ... 15 keys ...}",
+    "line": 359,
+    "purpose": "Mode presets (code/github/company/financial/people/paper/research/publication/personal-site/personal/news/lead/lead-generation/websets/auto) mapping mode -> category/search_type/hint; consumed by _mode_args."
+   },
+   {
+    "name": "ExaError",
+    "kind": "class",
+    "signature": "class ExaError(RuntimeError):",
+    "line": 378,
+    "purpose": "Base exception for rejected requests and invalid option combos."
+   },
+   {
+    "name": "ExaAuthError",
+    "kind": "class",
+    "signature": "class ExaAuthError(ExaError):",
+    "line": 382,
+    "purpose": "401: API key missing, invalid, or revoked (raised by _request)."
+   },
+   {
+    "name": "ExaRateLimitError",
+    "kind": "class",
+    "signature": "class ExaRateLimitError(ExaError):",
+    "line": 386,
+    "purpose": "429 rate limit / quota cap, raised after retry exhaustion."
+   },
+   {
+    "name": "ExaBadRequestError",
+    "kind": "class",
+    "signature": "class ExaBadRequestError(ExaError):",
+    "line": 390,
+    "purpose": "400/422 invalid request payload/param combo."
+   },
+   {
+    "name": "ExaPlanError",
+    "kind": "class",
+    "signature": "class ExaPlanError(ExaError):",
+    "line": 394,
+    "purpose": "403 endpoint/feature not enabled on plan."
+   },
+   {
+    "name": "ExaNotFoundError",
+    "kind": "class",
+    "signature": "class ExaNotFoundError(ExaError):",
+    "line": 398,
+    "purpose": "404 bad id / unreachable endpoint."
+   },
+   {
+    "name": "ExaServerError",
+    "kind": "class",
+    "signature": "class ExaServerError(ExaError):",
+    "line": 402,
+    "purpose": "5xx transient failure after retries."
+   },
+   {
+    "name": "_API_KEY_NAMES",
+    "kind": "constant",
+    "signature": "_API_KEY_NAMES = ['EXA_API_KEY']",
+    "line": 407,
+    "purpose": "Environment variable names to search for the Exa key."
+   },
+   {
+    "name": "_API_LABEL",
+    "kind": "constant",
+    "signature": "_API_LABEL = \"exa\"",
+    "line": 408,
+    "purpose": "Human-facing label used in error/cache keys."
+   },
+   {
+    "name": "_API_KEY_CACHE",
+    "kind": "constant",
+    "signature": "_API_KEY_CACHE = {}",
+    "line": 409,
+    "purpose": "Module-level cache of resolved API key per label; written by _get_api_key."
+   },
+   {
+    "name": "_seek_api_key",
+    "kind": "function",
+    "signature": "def _seek_api_key(names=None):",
+    "line": 411,
+    "purpose": "Resolve API key: env vars (skipping unexpanded ${...}), then dotenv files ($PRIME_DOTENV, ~/.prime/agent/.env, ~/.prime/.env, ~/.config/prime/env, ~/.env) via python-dotenv if installed, then key files (~/.prime/agent/keys/exa.key, exa_api_key.key, secrets.env, ~/.prime/keys/exa.env, ~/.exa.env, plus the dotenv paths); returns '' if none found.",
+    "deps": [
+     "_API_KEY_NAMES",
+     "_read_key_file"
+    ]
+   },
+   {
+    "name": "_read_key_file",
+    "kind": "function",
+    "signature": "def _read_key_file(path, names):",
+    "line": 453,
+    "purpose": "Parse a key file line by line: skip blanks/comments; return value of NAME=... matching names; otherwise return the first bare token of length >= 12 without '/'; None if file missing/no match.",
+    "deps": []
+   },
+   {
+    "name": "_get_api_key",
+    "kind": "function",
+    "signature": "def _get_api_key():",
+    "line": 473,
+    "purpose": "Return cached key or resolve via _seek_api_key once; exports the found key into os.environ (setdefault) and raises a bare RuntimeError with a '/login' instruction when no key is found.",
+    "deps": [
+     "_API_LABEL",
+     "_API_KEY_NAMES",
+     "_API_KEY_CACHE",
+     "_seek_api_key"
+    ]
+   },
+   {
+    "name": "_request",
+    "kind": "function",
+    "signature": "def _request(method: str, path: str, api_key: str, *, base: str = DEFAULT_API_URL, params=None, json_body=None, timeout=45.0, _retries=2) -> dict:",
+    "line": 491,
+    "purpose": "HTTP dispatcher via shared _http() client: sends x-api-key, returns resp.json() on <400; retries 429/5xx up to _retries times with Retry-After/exponential backoff (0.5s,1s,2s capped at 8s); then raises ExaNotFoundError(404), ExaAuthError(401), ExaPlanError(403), ExaBadRequestError(400/422), ExaRateLimitError(429), ExaServerError(other) with 500-char detail.",
+    "deps": [
+     "_http",
+     "_retry_after_seconds",
+     "DEFAULT_API_URL",
+     "ExaNotFoundError",
+     "ExaAuthError",
+     "ExaPlanError",
+     "ExaBadRequestError",
+     "ExaRateLimitError",
+     "ExaServerError"
+    ],
+    "endpoints": [
+     "generic dispatcher (path is a parameter); callers use /search, /contents, /answer, /findSimilar, /agent/runs, /monitors (+/v0/monitors under WEBSETS_API_URL), /v0/websets, /v0/teams/me"
+    ]
+   }
+  ],
+  "shared_state": [
+   "_API_KEY_CACHE (module dict; read+written by _get_api_key lines 475-487; never invalidated)",
+   "os.environ (mutated by _get_api_key via os.environ.setdefault, line 486)",
+   "_API_KEY_NAMES (module list; read by _seek_api_key/_get_api_key)",
+   "_API_LABEL (module str; read by _get_api_key)",
+   "MODES (module-level mutable dict; read later by _mode_args at line 1299)",
+   "VALID_CATEGORIES (module-level mutable set; read later by _category_canon at line 1280)",
+   "SEARCH_TYPES (module-level mutable set; read later by _resolve_search_type at line 1293)"
+  ],
+  "defects": [
+   {
+    "line": 475,
+    "severity": "high",
+    "category": "stale-cache / wrong recovery path",
+    "description": "_get_api_key returns _API_KEY_CACHE[label] before ever re-reading the environment. Once a key has been resolved, a corrected EXA_API_KEY re-exported in the same long-lived process (exactly the recovery the ExaAuthError message on line 528 tells the user to do: 'export a fresh EXA_API_KEY') is ignored and the stale key keeps producing 401s forever. There is no cache-invalidation or re-check path anywhere in the module.",
+    "suggestion": "Prefer the live environment variable over the cache (cache only file-derived keys, or re-run _seek_api_key when os.environ.get(_API_KEY_NAMES[0]) differs from the cached value)."
+   },
+   {
+    "line": 479,
+    "severity": "medium",
+    "category": "error-class contract drift",
+    "description": "Missing key raises a bare RuntimeError, but the ExaAuthError docstring (lines 382-383) says it covers 'the API key is missing, invalid, or revoked' and references/usage.md tells users to catch ExaAuthError for auth problems. Callers following the docs and catching ExaAuthError will miss the missing-key case entirely.",
+    "suggestion": "Raise ExaAuthError (or document RuntimeError explicitly) for the not-configured case so the documented catch set works."
+   },
+   {
+    "line": 469,
+    "severity": "medium",
+    "category": "wrong-data edge case",
+    "description": "_read_key_file's bare-token branch returns the first line with no '=', length >= 12 and no '/' as the key without checking it belongs to any name in `names`. In a key/env file whose first qualifying token is not the Exa key (e.g. a comment-free header token, a date-like string, or another service's token in secrets.env), the wrong value is silently returned as the API key, surfacing later only as a confusing 401.",
+    "suggestion": "For files that contain '='-style lines, require NAME= matches; only accept a bare token when the file contains no assignment lines at all (or name it <stem>.key explicitly)."
+   },
+   {
+    "line": 437,
+    "severity": "low",
+    "category": "swallowed error",
+    "description": "Bare 'except Exception: pass' around the dotenv import + value loop swallows all errors (unreadable/permission-denied dotenv files, parser bugs) and falls through to key-file lookup with no trace; the fallback chain then returns '' or a wrong-source key without indicating the dotenv step failed.",
+    "suggestion": "Catch only ImportError for the missing optional dependency; let per-file read errors raise or at least be distinguishable."
+   },
+   {
+    "line": 510,
+    "severity": "low",
+    "category": "unguarded decode on success",
+    "description": "'return resp.json()' on any status < 400 is unguarded: a 2xx response with an empty or non-JSON body raises ValueError/json.JSONDecodeError out of _request, which the module's documented error contract (Exa* subclasses from ExaError) does not cover.",
+    "suggestion": "Wrap resp.json() in try/except and raise a wrapped ExaServerError with the status code and a snippet of resp.text."
+   },
+   {
+    "line": 552,
+    "severity": "low",
+    "category": "dead code / unused variable",
+    "description": "Lines 552-553 ('# unreachable' / final raise) are unreachable for any _retries >= 0: every loop path either returns (<400) or raises. Additionally 'last_resp' (assigned lines 504 and 511) is never read, and 'detail' would be None in the dead fallback message.",
+    "suggestion": "Remove the unreachable fallback and the unused last_resp assignment, or convert _retries to assert max(0, _retries) and use last_resp for the diagnostic."
+   },
+   {
+    "line": 502,
+    "severity": "low",
+    "category": "code smell",
+    "description": "Redundant 'import time' inside _request; time is already imported at module level (line 12) and used by _retry_after_seconds at module scope.",
+    "suggestion": "Drop the local import."
+   },
+   {
+    "line": 339,
+    "severity": "low",
+    "category": "version drift",
+    "description": "__version__ = '0.19.0' is stale: pyproject.toml declares version = '0.20.0' (and the package was imported as v0.20.0 in commit d5e521f), so programmatic version checks disagree with the installed/packaged version.",
+    "suggestion": "Bump to '0.20.0' or read the version from importlib.metadata."
+   }
+  ]
+ },
+ "a9873ca874fa84640": {
+  "module": "brave/__init__.py",
+  "section": "brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line_range": "781-1090",
+  "functions": [
+   {
+    "name": "_clean_html",
+    "kind": "function",
+    "signature": "def _clean_html(text) -> str:",
+    "line": 785,
+    "purpose": "Strips HTML tags/entities and converts block/line-break tags to newlines, collapsing whitespace for readable text.",
+    "deps": [
+     "html.unescape (imported locally)",
+     "re.sub (imported locally as _re)"
+    ]
+   },
+   {
+    "name": "BraveError",
+    "kind": "class",
+    "signature": "class BraveError(RuntimeError):",
+    "line": 807,
+    "purpose": "RuntimeError subclass carrying .category (auth/param/rate_limit/http/timeout/network/http_422 per docstring), .details, and is_auth/is_rate_limited properties.",
+    "deps": [
+     "RuntimeError"
+    ]
+   },
+   {
+    "name": "BraveError.__init__",
+    "kind": "method",
+    "signature": "def __init__(self, message, *, category=None, details=None):",
+    "line": 816,
+    "purpose": "Stores the failure category and structured details on the exception.",
+    "deps": []
+   },
+   {
+    "name": "BraveError.is_auth",
+    "kind": "method",
+    "signature": "@property def is_auth(self) -> bool:",
+    "line": 822,
+    "purpose": "True when category == 'auth'.",
+    "deps": []
+   },
+   {
+    "name": "BraveError.is_rate_limited",
+    "kind": "method",
+    "signature": "@property def is_rate_limited(self) -> bool:",
+    "line": 826,
+    "purpose": "True when category == 'rate_limit'.",
+    "deps": []
+   },
+   {
+    "name": "_classify_response",
+    "kind": "function",
+    "signature": "def _classify_response(path, status, body, timeout) -> \"BraveError\":",
+    "line": 830,
+    "purpose": "Maps an HTTP status plus parsed body onto a categorised BraveError (rate_limit/auth/param/http) and normalises pydantic-style meta.errors detail lists.",
+    "deps": [
+     "BraveError"
+    ]
+   },
+   {
+    "name": "_API_KEY_NAMES",
+    "kind": "constant",
+    "signature": "_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']",
+    "line": 886,
+    "purpose": "Ordered env-var names probed for the Brave API key.",
+    "deps": []
+   },
+   {
+    "name": "_API_LABEL",
+    "kind": "constant",
+    "signature": "_API_LABEL = \"brave\"",
+    "line": 887,
+    "purpose": "Human label used in error messages and as the _API_KEY_CACHE key.",
+    "deps": []
+   },
+   {
+    "name": "_API_KEY_CACHE",
+    "kind": "constant",
+    "signature": "_API_KEY_CACHE = {}",
+    "line": 888,
+    "purpose": "Module-level mutable dict caching the resolved API key per label.",
+    "deps": []
+   },
+   {
+    "name": "_seek_api_key",
+    "kind": "function",
+    "signature": "def _seek_api_key(names=None):",
+    "line": 890,
+    "purpose": "Resolves an API key from environment variables, then dotenv files (PRIME_DOTENV + fixed paths), then key/env files; returns '' when nothing found.",
+    "deps": [
+     "os.environ",
+     "pathlib.Path",
+     "dotenv.dotenv_values (optional import)",
+     "_API_KEY_NAMES",
+     "_read_key_file"
+    ]
+   },
+   {
+    "name": "_read_key_file",
+    "kind": "function",
+    "signature": "def _read_key_file(path, names):",
+    "line": 932,
+    "purpose": "Parses KEY=VALUE lines (or a bare key line) from a key/env file, returning the first value for one of `names` or None.",
+    "deps": [
+     "pathlib.Path"
+    ]
+   },
+   {
+    "name": "_get_api_key",
+    "kind": "function",
+    "signature": "def _get_api_key():",
+    "line": 952,
+    "purpose": "Returns the cached API key, raising RuntimeError with setup instructions if none found; caches into _API_KEY_CACHE and backfills env vars.",
+    "deps": [
+     "_API_LABEL",
+     "_API_KEY_CACHE",
+     "_seek_api_key",
+     "_API_KEY_NAMES",
+     "os.environ.setdefault"
+    ]
+   },
+   {
+    "name": "_request",
+    "kind": "function",
+    "signature": "def _request(path, params, timeout, *, fallback=None, retries=2, headers=None):",
+    "line": 970,
+    "purpose": "GETs DEFAULT_API_URL+path with the X-Subscription-Token, retries transient failures (network errors, 429/5xx, non-JSON 200) with backoff, fast-fails on auth/validation errors, and may fall back to another endpoint path.",
+    "deps": [
+     "_get_api_key",
+     "DEFAULT_API_URL",
+     "_http",
+     "time.sleep",
+     "_retry_after_seconds",
+     "BraveError",
+     "_classify_response",
+     "_fallback_ok",
+     "_run_fallback",
+     "httpx.TimeoutException/ConnectError/ConnectTimeout/ReadTimeout/HTTPError"
+    ]
+   },
+   {
+    "name": "_fallback_ok",
+    "kind": "function",
+    "signature": "def _fallback_ok(fallback, params, headers, timeout, path, status):",
+    "line": 1054,
+    "purpose": "Stub gate: whether a fallback endpoint is configured (always true when called, since the caller already checked `fallback` is truthy).",
+    "deps": []
+   },
+   {
+    "name": "_run_fallback",
+    "kind": "function",
+    "signature": "def _run_fallback(fallback, params, headers, timeout, path, source_status):",
+    "line": 1059,
+    "purpose": "Quietly GETs the fallback endpoint; on 200+JSON tags the data dict with a `_fallback` descriptor and returns it, else returns None.",
+    "deps": [
+     "_http",
+     "DEFAULT_API_URL"
+    ]
+   },
+   {
+    "name": "_host",
+    "kind": "function",
+    "signature": "def _host(item):",
+    "line": 1081,
+    "purpose": "Extracts the hostname from an item's meta_url dict, or None.",
+    "deps": []
+   },
+   {
+    "name": "_as_list",
+    "kind": "function",
+    "signature": "def _as_list(v):",
+    "line": 1087,
+    "purpose": "Coerces a value to a list of dicts or [] (list as-is; dict -> its 'results' or 'buttons' value; anything else -> []).",
+    "deps": [],
+    "notes": "Def starts at line 1087 inside the range; body continues to line 1093, just past the 1090 range boundary."
+   }
+  ],
+  "shared_state": [
+   "_API_KEY_CACHE (dict, mutated by _get_api_key at line 966)",
+   "os.environ (written by _get_api_key via setdefault at line 965; read by _seek_api_key at lines 894/899)",
+   "_CLIENT (httpx.Client, lazy-initialized/read inside _http() called from _request line 991 and _run_fallback line 1062)"
+  ],
+  "defects": [
+   {
+    "line": 1044,
+    "severity": "critical",
+    "category": "swallowed-error-cascade-crash",
+    "description": "_run_fallback (line 1059) returns None for ANY failure of the fallback endpoint (connection error, non-200, non-JSON), and _request returns that None at line 1044 as if it were a successful payload. The sole caller _search_full (line 2010) immediately executes `diag = _query_diag(data)` and `data.get(...)` with data=None, raising AttributeError: 'NoneType' object has no attribute 'get' at line 2011. Trigger: mode='local' with a key lacking local support that returns a retryable status (429/5xx/404) on the local endpoint while the web fallback GET also fails. The docs promise 'Local mode can fall back to web search; inspect `fallback`' (references/api.md line 96) \u2014 instead the whole search crashes.",
+    "suggestion": "In _request, when `fallback` is set and `_run_fallback` returns None, raise the original classified error (`error`) instead of returning None."
+   },
+   {
+    "line": 1015,
+    "severity": "high",
+    "category": "dead-branch-contract-drift",
+    "description": "`if isinstance(data, dict) or data is not None:` is a tautology equivalent to `if data is not None:` (a dict is never None). So the intended '200-but-unparseable is a server-side oddity; treat as transient' path (lines 1017-1025) is unreachable: resp.json() that parses to None (literal 'null'), a bare JSON string, number, or list is returned as the payload. Any downstream `data.get(...)` (e.g. _query_diag at line 1716) then crashes with AttributeError/TypeError on a non-dict 'successful' response.",
+    "suggestion": "Use `if isinstance(data, dict):` so non-dict/None 200 bodies fall through to the retry/raise path as the comment intends."
+   },
+   {
+    "line": 1041,
+    "severity": "high",
+    "category": "operator-precedence",
+    "description": "`if fallback and resp.status_code != 200 and (retryable or not fast_fail and fallback is not None):` \u2014 `and` binds tighter than `or`, so the condition is `... and (retryable or ((not fast_fail) and (fallback is not None)))`. `fallback is not None` is always true here (first clause of the chain), making the inner `and` dead; and a fast-fail status that is also retryable (e.g. a 429 body tagged component=authentication) silently takes the fallback, inverting the 'definitive errors are not retried/fallen-back' contract stated in the docstring (lines 975-976).",
+    "suggestion": "Explicitly parenthesise: `if fallback and resp.status_code != 200 and (retryable or not fast_fail):` and drop the redundant `fallback is not None` (and possibly the _fallback_ok stub)."
+   },
+   {
+    "line": 1033,
+    "severity": "medium",
+    "category": "inconsistent-error-classification",
+    "description": "fast_fail treats VALIDATION as definitive only when `resp.status_code == 422 and code == 'VALIDATION'`, whereas _classify_response (line 857) classifies `code == 'VALIDATION'` as 'param' regardless of status. A 400/500 response whose body carries error.code='VALIDATION' therefore gets retried by _request (fast_fail False) and, after retries, raised with category='param' even though the real failure was a non-validation HTTP error \u2014 callers reacting on .category get the wrong verdict.",
+    "suggestion": "Align the two: have _request compute fast_fail via the same predicate as _classify_response, or drop the status guard in _classify_response."
+   },
+   {
+    "line": 877,
+    "severity": "medium",
+    "category": "swallowed-error-fallback-gap",
+    "description": "In _classify_response, if the meta.errors normalisation comprehension raises (e.g. an entry whose 'loc' is a non-iterable non-string), `except Exception: pass` leaves `details` as the RAW unnormalized list (still set from line 859). The caller then reports un-normalised details and str()s the raw list in the 200-char message instead of falling back to the body text.",
+    "suggestion": "Set `details = None` (or a sentinel) in the except block so the fallback message uses the raw body."
+   },
+   {
+    "line": 948,
+    "severity": "medium",
+    "category": "over-broad-heuristic",
+    "description": "_read_key_file accepts ANY line with length >= 12 and no '/' as the API key (`elif len(line) >= 12 and \"/\" not in line and line not in names: return line...`). For a file like ~/.prime/agent/keys/secrets.env that also defines BRAVE_API_KEY, the first 12+ char line that isn't KEY=VALUE for a Brave name (a comment without '#', a shebang, another service's bare token) is returned as the Brave key before the real BRAVE_API_KEY= line is ever seen \u2014 wrong credential silently used.",
+    "suggestion": "Only return bare-line values from files dedicated to this key (the stem.key / names.lower().key files); require KEY=VALUE form for generic .env files."
+   },
+   {
+    "line": 857,
+    "severity": "low",
+    "category": "operator-precedence",
+    "description": "`elif code == \"VALIDATION\" or status == 422 and meta.get(\"errors\"):` parses as `code == 'VALIDATION' or (status == 422 and meta.get('errors'))` due to precedence; works by luck but any 4xx/5xx body containing error.code='VALIDATION' is classified 'param' with meta.errors possibly empty/None, even though the transport error is the real issue. Add parentheses for clarity.",
+    "suggestion": "elif code == \"VALIDATION\" or (status == 422 and meta.get(\"errors\")):"
+   },
+   {
+    "line": 916,
+    "severity": "low",
+    "category": "overly-broad-except",
+    "description": "`try: from dotenv import dotenv_values ... except Exception: pass` wraps the entire dotenv loop, but only an ImportError can occur before the loop body; any unexpected error from dotenv_values() (corrupt/oversized .env) is silently swallowed, so a misconfigured dotenv file yields no signal and the search later fails with the generic 'no API key' message.",
+    "suggestion": "Catch only ImportError around the import; let dotenv_values errors surface or log them."
+   },
+   {
+    "line": 810,
+    "severity": "low",
+    "category": "dead-categories-contract-drift",
+    "description": "BraveError docstring lists `timeout` and `http_422` as valid categories, but grep confirms neither string is ever assigned anywhere in the module. Callers checking `category == 'timeout'` (or distinguishing http_422 from param) can never match; timeouts surface as category='network' instead.",
+    "suggestion": "Either assign these categories where timeouts/422s are handled, or remove them from the docstring."
+   },
+   {
+    "line": 830,
+    "severity": "low",
+    "category": "unused-parameter",
+    "description": "The `timeout` parameter of _classify_response is never referenced in the body; it is threaded from _request (lines 1046/1047) purely for symmetry.",
+    "suggestion": "Drop the parameter or use it in the message (e.g. note the timeout value on network-related classifications)."
+   },
+   {
+    "line": 880,
+    "severity": "low",
+    "category": "potential-secret-leak",
+    "description": "The error message embeds `str(details if details else body)[:200]` \u2014 up to 200 chars of the raw response body (or raw details list repr) into an exception message. If a response body ever echoes the X-Subscription-Token or other credential material, it would leak into logs/agent transcripts.",
+    "suggestion": "Limit the embedded body to a fixed set of safe fields (error.code/error.detail) rather than raw body text."
+   },
+   {
+    "line": 1054,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "_fallback_ok is a trivial `return bool(fallback)` stub invoked only from _request line 1042 where the enclosing `if fallback and ...` already guarantees truthiness; it adds an indirection with no decision.",
+    "suggestion": "Inline the check (or remove both) and let _request call _run_fallback directly."
+   },
+   {
+    "line": 964,
+    "severity": "low",
+    "category": "shared-state-mutation",
+    "description": "_get_api_key backfills the resolved key into os.environ for ALL _API_KEY_NAMES via setdefault \u2014 a side effect beyond the documented lookup, mutating process-wide state for sibling threads/imports and non-thread-safe with concurrent first calls (two threads can both miss the cache and race the setdefault; harmless result-wise since values agree, but the env mutation is observable).",
+    "suggestion": "Document the env backfill explicitly or drop it; guard the cache read/write if true concurrency on first use is expected."
+   },
+   {
+    "line": 800,
+    "severity": "low",
+    "category": "ineffective-cleaning",
+    "description": "In _clean_html, line 796's html.unescape already converts '&nbsp;' to U+00A0, so the `re.sub(r\"&nbsp;\", \" \", t)` at line 800 can never match; and line 803 `re.sub(r\"\\s*\\n\\s*\", \"\\n\", ...)` is a no-op that keeps the space on each side of a newline, so 'a\\n   b' collapses to 'a \\n b' rather than a clean line break (minor cosmetic noise in readable output).",
+    "suggestion": "Delete line 800 and use `re.sub(r\"[ \\t]*\\n[ \\t]*\", \"\\n\", t)` if strict line breaks are wanted."
+   }
+  ]
+ },
+ "ae5214fc34d1dbb5c": {
+  "module": "exa.__init__",
+  "section": "exa-tail-dupes (lines 5351-5988)",
+  "functions": [
+   {
+    "name": "dev_help",
+    "kind": "function",
+    "signature": "def dev_help(query, *, citation_format=None, timeout=90.0):",
+    "line": 5351,
+    "purpose": "Developer help: wraps answer() and adds code-fence snippet extraction + per-citation source list; returns dict with query/answer/steps/snippets/sources/markdown/request_id.",
+    "deps": [
+     "answer",
+     "_fence_blocks"
+    ],
+    "endpoints": [
+     "/answer"
+    ],
+    "notes": "Unique (not duplicated). Uses Answer.answer/citations/request_id; _fence_blocks defined at 4963 (outside range)."
+   },
+   {
+    "name": "hf_discussions",
+    "kind": "function",
+    "signature": "def hf_discussions(query, *, num_results=6, timeout=45.0):",
+    "line": 5397,
+    "purpose": "Runs two domain-scoped search() calls (huggingface.co, discuss.huggingface.co), dedups by URL, tags each thread's community type; returns dict with query/count/threads/markdown.",
+    "deps": [
+     "search"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Unique. Inner both search calls wrapped in try/except Exception: pass (5436) -> any error yields empty threads silently."
+   },
+   {
+    "name": "pkg_releases (SHADOWED)",
+    "kind": "function",
+    "signature": "def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):",
+    "line": 5459,
+    "purpose": "Release/version-signal digest: github-mode search for release/changelog pages + optional 7-day news sweep; returns dict with pkg/releases/news/n_releases/n_news/markdown.",
+    "deps": [
+     "search",
+     "news_roundup"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "DUPLICATE: byte-identical copy at 5705 shadows this def; this 5459 copy is dead code (never bound at runtime)."
+   },
+   {
+    "name": "_dep_type (SHADOWED)",
+    "kind": "function",
+    "signature": "def _dep_type(blob):",
+    "line": 5507,
+    "purpose": "Classifies a deprecation-signal text blob into one of deprecat/migrat/removal/breaking/release/other via substring matching.",
+    "deps": [],
+    "endpoints": [],
+    "notes": "DUPLICATE: identical copy at 5753 shadows this; this 5507 copy is dead. Uses plain `in` substring checks (no word-boundary bug here)."
+   },
+   {
+    "name": "deprecations (SHADOWED)",
+    "kind": "function",
+    "signature": "def deprecations(query: str, *, days=30, timeout=90.0):",
+    "line": 5522,
+    "purpose": "Deprecation/EOL signals: composes answer() over deprecation corpus + freshness-filtered news search, labels each signal; returns dict with query/signals/counts/n/markdown.",
+    "deps": [
+     "answer",
+     "search",
+     "_dep_type"
+    ],
+    "endpoints": [
+     "/answer",
+     "/search"
+    ],
+    "notes": "DUPLICATE: copy at 5768 shadows this; differs only by one comment line and local var `start`(here) vs `st`(5768 copy). This 5522 copy is dead. Contains the broken \\b regex gate (5550/5554/5567)."
+   },
+   {
+    "name": "snippet (SHADOWED)",
+    "kind": "function",
+    "signature": "def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):",
+    "line": 5581,
+    "purpose": "Pulls small code snippets via github-mode search, filters by filename extension, returns dict with query/lang/snippets/n/markdown.",
+    "deps": [
+     "search"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "DUPLICATE: byte-identical copy at 5826 shadows this; this 5581 copy is dead code."
+   },
+   {
+    "name": "api_reference",
+    "kind": "function",
+    "signature": "def api_reference(url, *, max_characters=9000, with_summary=True, timeout=45.0):",
+    "line": 5625,
+    "purpose": "Fetches a docs/API page via fetch() into structured reference (title/text/summary/characters/markdown); normalizes list/str/dict/object return shapes from fetch.",
+    "deps": [
+     "fetch"
+    ],
+    "endpoints": [
+     "/contents"
+    ],
+    "notes": "Unique. Docstring says default max_characters=16000 but signature default is 9000 (contract/doc drift)."
+   },
+   {
+    "name": "code_lint_tips (SHADOWED)",
+    "kind": "function",
+    "signature": "def code_lint_tips(query: str, *, timeout=90.0):",
+    "line": 5672,
+    "purpose": "Delegates to dev_help() and returns a trimmed primer dict (query/answer/snippets/sources/markdown).",
+    "deps": [
+     "dev_help",
+     "answer"
+    ],
+    "endpoints": [
+     "/answer"
+    ],
+    "notes": "DUPLICATE: byte-identical copy at 5870 shadows this; this 5672 copy is dead code."
+   },
+   {
+    "name": "pkg_releases (effective)",
+    "kind": "function",
+    "signature": "def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):",
+    "line": 5705,
+    "purpose": "Same release/version-signal digest as the 5459 copy; this is the definition bound at runtime.",
+    "deps": [
+     "search",
+     "news_roundup"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Shadowing copy of 5459 (identical body). news_roundup's ExaError (no fresh results) is caught here -> news=[]."
+   },
+   {
+    "name": "_dep_type (effective)",
+    "kind": "function",
+    "signature": "def _dep_type(blob):",
+    "line": 5753,
+    "purpose": "Runtime-bound classifier for deprecation signal text (identical to 5507 copy).",
+    "deps": [],
+    "endpoints": [],
+    "notes": "Shadowing copy of 5507."
+   },
+   {
+    "name": "deprecations (effective)",
+    "kind": "function",
+    "signature": "def deprecations(query: str, *, days=30, timeout=90.0):",
+    "line": 5768,
+    "purpose": "Runtime-bound deprecation-signal composer (identical behavior to 5522 copy, local var named `st` here).",
+    "deps": [
+     "answer",
+     "search",
+     "_dep_type"
+    ],
+    "endpoints": [
+     "/answer",
+     "/search"
+    ],
+    "notes": "Shadowing copy of 5522. Carries the broken \\b word-boundary gate at 5800 and 5812."
+   },
+   {
+    "name": "snippet (effective)",
+    "kind": "function",
+    "signature": "def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):",
+    "line": 5826,
+    "purpose": "Runtime-bound code-snippet puller (identical to 5581 copy).",
+    "deps": [
+     "search"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Shadowing copy of 5581."
+   },
+   {
+    "name": "code_lint_tips (effective)",
+    "kind": "function",
+    "signature": "def code_lint_tips(query: str, *, timeout=90.0):",
+    "line": 5870,
+    "purpose": "Runtime-bound lint-advice primer (identical to 5672 copy).",
+    "deps": [
+     "dev_help",
+     "answer"
+    ],
+    "endpoints": [
+     "/answer"
+    ],
+    "notes": "Shadowing copy of 5672."
+   },
+   {
+    "name": "is_deprecated",
+    "kind": "function",
+    "signature": "def is_deprecated(pkg, *, days=180, timeout=90.0):",
+    "line": 5894,
+    "purpose": "Bool staleness/deprecation verdict: deprecations() signal sweep + news_roundup() freshness activity; returns dict with pkg/deprecated/reasons/active_recent/markdown.",
+    "deps": [
+     "deprecations",
+     "news_roundup",
+     "search",
+     "answer"
+    ],
+    "endpoints": [
+     "/answer",
+     "/search"
+    ],
+    "notes": "Unique (the ONLY non-duplicated Round-18 workflow). Its `deprecated` verdict is driven solely by deprecations().signals, which the broken regex empties -> verdict is effectively always False."
+   },
+   {
+    "name": "__all__",
+    "kind": "constant",
+    "signature": "__all__ = [ ... ]",
+    "line": 5936,
+    "purpose": "Module public-export list; includes all Round-18 names (pkg_releases, deprecations, snippet, api_reference, is_deprecated, code_lint_tips, dev_help, hf_discussions).",
+    "deps": [],
+    "endpoints": [],
+    "notes": "Constant. Duplicated def names appear once here; at runtime only the effective (2nd) copies exist."
+   }
+  ],
+  "shared_state": [
+   "Module namespace (globals()) \u2014 mutated at line 5988 by _apply_async_to(globals()) which rebinds every public function name to an async-aware wrapper; because the duplicated names resolve to the last def, only the 5 effective copies get wrapped.",
+   "__all__ \u2014 assigned at line 5936 (module-level, though semantically a constant list).",
+   "Result/SearchResults/Answer/AgentRun/AgentTrace classes \u2014 mutated in the tail loop at 5984-5986 by attaching __await__ to each (module-level mutable objects)."
+  ],
+  "defects": [
+   {
+    "line": 5812,
+    "severity": "high",
+    "category": "wrong-results",
+    "description": "The deprecation gate regex r\"\\b(deprecat|obsolete|removed|migrat|breaking|sunset)\\b\" (also 5800, and the shaded copies 5550/5554/5567) requires a word boundary on BOTH sides of each stem. Since 'deprecat', 'remov', 'migrat' are stems, not whole words, \\bdeprecat\\b only matches the literal non-word 'deprecat'. Verified: it fails to match 'deprecated', 'deprecation', 'deprecating', 'removed', 'removal', 'migration', 'migrating' \u2014 i.e. the actual deprecation vocabulary \u2014 while only catching whole words 'obsolete', 'removed', 'breaking', 'sunset', 'end of life'. _dep_type() (substring, no \\b) would classify 'deprecated' fine, but items never reach it because this gate rejects them first. Net effect: deprecations() returns near-empty signals/counts for its primary use case.",
+    "suggestion": "Drop the trailing \\b (keep leading \\b only) or use substring matching: r\"\\b(deprecat|obsolet|end[- ]of[- ]life|remov|migrat|breaking|sunset)\" so stems match as prefixes."
+   },
+   {
+    "line": 5914,
+    "severity": "medium",
+    "category": "wrong-results",
+    "description": "is_deprecated() derives its entire 'deprecated' verdict from deprecations(...).get('signals') (line 5915-5917). Because deprecations() is neutered by the broken \\b regex gate, signals is almost always empty, so is_deprecated() returns {'deprecated': False} even for genuinely deprecated packages. The freshness/news check (active_recent) does not feed the verdict, so the advertised deprecation-detection capability silently does not work.",
+    "suggestion": "Fix the regex gate in deprecations() (root cause); optionally add a direct deprecation-keyword search in is_deprecated() so the verdict is not single-sourced to one fragile classifier."
+   },
+   {
+    "line": 5459,
+    "severity": "medium",
+    "category": "dead-code-shadowing",
+    "description": "Five functions are defined twice in this range; the first definition of each is shadowed and never executed at runtime (module dict keeps the last binding). Pairs: pkg_releases 5459->5705, _dep_type 5507->5753, deprecations 5522->5768, snippet 5581->5826, code_lint_tips 5672->5870. The 5459/5507/5522/5581/5672 copies (plus the duplicated banner comment at 5450-5456 and 5696-5702) are dead. This is ~200 lines of duplicated code and a maintenance hazard (any future edit must be applied to two places).",
+    "suggestion": "Delete the first (shaded) copies at 5459, 5507, 5522, 5581, 5672 and the duplicate banner comment at 5450-5456, keeping only the effective 5705/5753/5768/5826/5870 block and the single banner."
+   },
+   {
+    "line": 5777,
+    "severity": "low",
+    "category": "contract-drift",
+    "description": "deprecations() docstring promises signals entries of shape {url,title,type,snippet}, but the code only ever builds {url, title, type} \u2014 'snippet' is never populated. Additionally, markdown line 5821 does s.get('url') which is None for the answer-derived signal (url=None at 5801) and null citation urls, so the rendered line prints a literal 'None'.",
+    "suggestion": "Either add a 'snippet' field (e.g. truncated title/url) to each signal dict or correct the docstring; guard the None url in the markdown line (use s.get('url') or '')."
+   },
+   {
+    "line": 5634,
+    "severity": "low",
+    "category": "doc-mismatch",
+    "description": "api_reference() docstring states 'max_characters: max text to keep (default 16000)' but the signature default is 9000 (line 5625). The actual capped text passed to fetch() is 9000.",
+    "suggestion": "Correct the docstring default to 9000 (or change the signature default to 16000 if that was intended)."
+   },
+   {
+    "line": 5803,
+    "severity": "low",
+    "category": "deprecated-api",
+    "description": "deprecations() uses datetime.utcnow() (both copies: 5558 and 5803), which is deprecated in Python 3.12+ (emits DeprecationWarning). The value is only used for a date-string window, so it is not a correctness bug, but it is inconsistent with the rest of the module which uses datetime.now(timezone.utc) (e.g. 3581, 4347).",
+    "suggestion": "Replace datetime.utcnow() with datetime.now(timezone.utc) to match the module's other date handling."
+   },
+   {
+    "line": 5436,
+    "severity": "low",
+    "category": "swallowed-errors",
+    "description": "hf_discussions() wraps each of its two search() calls in 'except Exception: pass' (5430-5437), silently swallowing all errors including missing/invalid API key or 4xx/5xx; a fully failed call returns an empty threads list indistinguishable from 'no results'. Same silent-swallow pattern in pkg_releases (news sweep) and both deprecations() call blocks.",
+    "suggestion": "At minimum narrow to ExaError and/or log the exception; returning empty-on-error is defensible but currently hides auth/config failures from the caller."
+   }
+  ]
+ },
+ "ae6b29f994105f2e1": {
+  "module": "exa (exa/src/exa/__init__.py)",
+  "section": "exa-param-search",
+  "line_range": "1261-1675",
+  "shared_state": [
+   "VALID_CATEGORIES (set, read by _category_canon)",
+   "SEARCH_TYPES (set, read by _resolve_search_type)",
+   "MODES (dict, read by _mode_args)",
+   "_API_KEY_CACHE (dict, written transitively via _get_api_key from search/brief/run)",
+   "_CLIENT (written transitively via _http/_request from search)",
+   "os.environ (written transitively via _get_api_key)"
+  ],
+  "functions": [
+   {
+    "name": "_category_canon",
+    "kind": "function",
+    "signature": "def _category_canon(category: Optional[str]) -> Optional[str:",
+    "line": 1263,
+    "purpose": "Map a user-facing category/mode token to the canonical Exa API category; normalize/strip, hit a hard-coded table, else fall back to VALID_CATEGORIES, else warn+return None.",
+    "deps": [
+     "VALID_CATEGORIES"
+    ],
+    "notes": "Prints to stdout (1283) and returns None for unrecognized categories, silently dropping the requested filter."
+   },
+   {
+    "name": "_resolve_search_type",
+    "kind": "function",
+    "signature": "def _resolve_search_type(search_type: Optional[str], default: str) -> str:",
+    "line": 1287,
+    "purpose": "Normalize search_type; map legacy 'magic' to 'deep'; raise ExaError if not in SEARCH_TYPES; return default when None.",
+    "deps": [
+     "SEARCH_TYPES",
+     "ExaError"
+    ],
+    "notes": "Does not validate the `default` argument itself (only the explicit search_type)."
+   },
+   {
+    "name": "_mode_args",
+    "kind": "function",
+    "signature": "def _mode_args(mode: str, category: Optional[str], search_type: Optional[str):",
+    "line": 1298,
+    "purpose": "Look up MODES preset for mode, resolve category + search_type, return (category, search_type).",
+    "deps": [
+     "MODES",
+     "_resolve_search_type"
+    ],
+    "notes": "Raises plain ValueError for unknown mode (1301), not ExaError."
+   },
+   {
+    "name": "_validate_search_params",
+    "kind": "function",
+    "signature": "def _validate_search_params(num_results, max_characters, category, start_published_date, end_published_date, exclude_domains):",
+    "line": 1307,
+    "purpose": "Range-check num_results (1..100), cap max_characters at 10000, and reject date/exclude_domains filters for company/people categories.",
+    "deps": [
+     "ExaError"
+    ],
+    "notes": "No lower-bound check on max_characters; only validates when category is the canonical 'company'/'people'."
+   },
+   {
+    "name": "_contents_block",
+    "kind": "function",
+    "signature": "def _contents_block(*, with_text=False, max_characters=None, text_verbosity=None, with_highlights=False, highlights_query=None, highlights_max=None, with_summary=False, summary_query=None, summary_schema=None, extras_links=0, extras_image_links=0, extras_rich_links=0, extras_rich_image_links=0, extras_code_blocks=0, max_age_hours=None, subpages=0, subpage_target=None, livecrawl=False, livecrawl_timeout=None, include_sections=None, exclude_sections=None, include_html_tags=False) -> dict:",
+    "line": 1335,
+    "purpose": "Build an Exa `contents` dict emitting only requested keys (text/highlights/summary/extras/maxAge/subpages/livecrawl).",
+    "deps": [],
+    "notes": "include_html_tags/include_sections/exclude_sections are only emitted inside the text sub-block; silently dropped if no text is requested."
+   },
+   {
+    "name": "search",
+    "kind": "function",
+    "signature": "def search(query: str, *, mode: str = \"auto\", num_results: int = 5, search_type: Optional[str] = None, category: Optional[str] = None, use_autoprompt: bool = False, start_published_date: Optional[str] = None, end_published_date: Optional[str] = None, start_crawl_date: Optional[str] = None, end_crawl_date: Optional[str] = None, include_domains=None, exclude_domains=None, text_include=None, text_exclude=None, with_text: bool = False, max_characters: Optional[int] = None, text_verbosity: Optional[str] = None, with_highlights: bool = False, highlights_query: Optional[str] = None, highlights_max_characters: Optional[int] = None, with_summary: bool = False, summary_query: Optional[str] = None, summary_schema: Optional[dict] = None, extras_links: int = 0, extras_image_links: int = 0, extras_rich_links: int = 0, extras_rich_image_links: int = 0, extras_code_blocks: int = 0, max_age_hours: Optional[int] = None, subpages: int = 0, subpage_target=None, include_sections=None, exclude_sections=None, include_html_tags: bool = False, livecrawl: Optional[str] = None, livecrawl_timeout: Optional[int] = None, output_schema: Optional[dict] = None, system_prompt: Optional[str] = None, additional_queries=None, user_location: Optional[str] = None, moderation: bool = False, compliance: Optional[str] = None, context: Optional[str] = None, stream: bool = False, timeout: float = 60.0,) -> SearchResults:",
+    "line": 1415,
+    "purpose": "Primary structured entry: build /search payload, POST it, wrap 1-indexed Result list + metadata into SearchResults.",
+    "deps": [
+     "_mode_args",
+     "_category_canon",
+     "_validate_search_params",
+     "_get_api_key",
+     "_request",
+     "Result",
+     "SearchResults"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Results are 1-indexed via enumerate(...)+1. The `stream` param sets body['stream']=True but is never actually consumed."
+   },
+   {
+    "name": "_fmt_result",
+    "kind": "function",
+    "signature": "def _fmt_result(r: Result) -> List[str]:",
+    "line": 1558,
+    "purpose": "Render a single Result as human-readable lines (index.title, url, published, author, image, favicon, snippet, optional summary).",
+    "deps": [
+     "Result"
+    ],
+    "notes": "Summary only shown when snippet length < 200."
+   },
+   {
+    "name": "_fmt",
+    "kind": "function",
+    "signature": "def _fmt(results) -> str:",
+    "line": 1574,
+    "purpose": "Join per-result line blocks into one newline-separated string.",
+    "deps": [
+     "_fmt_result"
+    ],
+    "notes": ""
+   },
+   {
+    "name": "brief",
+    "kind": "function",
+    "signature": "def brief(query: str, **kwargs) -> dict:",
+    "line": 1581,
+    "purpose": "Token-budgeted compact dict for a model turn; runs search() and returns SearchResults.to_agent().",
+    "deps": [
+     "search",
+     "SearchResults.to_agent"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Pure passthrough of kwargs to search()."
+   },
+   {
+    "name": "run",
+    "kind": "function",
+    "signature": "def run(query: str, *, mode: str = \"auto\", num_results: int = 5, search_type: Optional[str] = None, category: Optional[str] = None, use_autoprompt: bool = False, start_published_date: Optional[str] = None, end_published_date: Optional[str] = None, start_crawl_date: Optional[str] = None, end_crawl_date: Optional[str] = None, include_domains=None, exclude_domains=None, text_include=None, text_exclude=None, with_text: bool = False, max_characters: int = 500, text_verbosity: Optional[str] = None, with_highlights: bool = False, highlights_query: Optional[str] = None, highlights_max_characters: Optional[int] = None, with_summary: bool = False, summary_query: Optional[str] = None, summary_schema: Optional[dict] = None, extras_links: int = 0, extras_image_links: int = 0, extras_rich_links: int = 0, extras_rich_image_links: int = 0, extras_code_blocks: int = 0, max_age_hours: Optional[int] = None, subpages: int = 0, subpage_target=None, include_sections=None, exclude_sections=None, include_html_tags: bool = False, livecrawl: Optional[str] = None, livecrawl_timeout: Optional[int] = None, output_schema: Optional[dict] = None, system_prompt: Optional[str] = None, additional_queries=None, user_location: Optional[str] = None, moderation: bool = False, compliance: Optional[str] = None, context: Optional[str] = None, timeout: float = 30.0,) -> str:",
+    "line": 1586,
+    "purpose": "Readable default entry (exa.run/await exa(...)); calls search(), formats results, appends synthesized answer if present.",
+    "deps": [
+     "search",
+     "_fmt"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Nulls out max_characters unless with_text=True. Completes at line 1673; not truncated by the range."
+   }
+  ],
+  "defects": [
+   {
+    "line": 1301,
+    "severity": "medium",
+    "category": "inconsistent-error-classification",
+    "description": "_mode_args raises a plain ValueError for an unknown mode, while every other validation in this section (and the module) raises ExaError. The ExaError docstring explicitly covers 'an invalid option combo is given', so a caller doing `except ExaError` around search()/run() will NOT catch a bad mode and will get an unhandled ValueError instead.",
+    "suggestion": "Raise ExaError (or a dedicated subclass) for unknown mode to match the rest of the module."
+   },
+   {
+    "line": 1544,
+    "severity": "low",
+    "category": "contract-drift",
+    "description": "search(stream=True) sets body['stream']=True, but the transport _request() always parses a single JSON body via resp.json() (line 510) and never consumes an SSE stream. The parameter is therefore a no-op that cannot deliver a stream; the real streaming path is the separate stream_search() at line 2807. Advertsing `stream` on search() is misleading.",
+    "suggestion": "Remove the `stream` parameter from search() or route it to the streaming transport; it currently cannot work."
+   },
+   {
+    "line": 1350,
+    "severity": "low",
+    "category": "silently-dropped-param",
+    "description": "In _contents_block, include_html_tags, include_sections and exclude_sections are emitted only inside the text sub-dict (lines 1360-1365), which is only reached when `with_text or max_characters or text_verbosity` is truthy. If a caller sets only e.g. include_sections=[...] with no text option, the entire block is skipped and the parameter is silently ignored with no error.",
+    "suggestion": "Either reject these section/HTML options when no text is requested, or at least warn; don't silently drop them."
+   },
+   {
+    "line": 1451,
+    "severity": "low",
+    "category": "type-annotation-mismatch",
+    "description": "livecrawl is annotated Optional[str] in search() (and defaults to False in _contents_block at line 1340), but the Exa contents field is a boolean and is emitted verbatim via `if livecrawl: c['livecrawl'] = livecrawl` (line 1405). Passing a string would send a string where the API expects a bool.",
+    "suggestion": "Type it as Optional[bool] and normalize to bool before emitting."
+   },
+   {
+    "line": 1283,
+    "severity": "low",
+    "category": "silent-result-change",
+    "description": "_category_canon prints a warning to stdout and returns None for an unsupported category, so the user's requested category filter is silently not applied and search() runs without it. For a library this means stdout output on a data path and results that differ from what was requested, with no exception.",
+    "suggestion": "Consider raising or returning a sentinel that lets search() decide; stdout-print from a helper is a code smell and the filter drop is easy to miss."
+   }
+  ]
+ },
+ "ae6cdf9d9cbe9ec02": {
+  "module": "exa",
+  "section": "exa-agent-runs (lines 1946-2610)",
+  "line_range": "1946-2610",
+  "functions": [
+   {
+    "name": "AgentRun",
+    "kind": "class",
+    "signature": "class AgentRun:  # __init__(self, raw: dict)",
+    "line": 1947,
+    "purpose": "Typed wrapper over the /agent/runs response: text/structured output, grounding, usage, cost, per-provider Connect breakdown.",
+    "deps": [],
+    "endpoints": []
+   },
+   {
+    "name": "AgentTrace",
+    "kind": "class",
+    "signature": "class AgentTrace:  # __init__(self, run_id: str, events)",
+    "line": 2077,
+    "purpose": "Parses the agent-run event list into an ordered steps timeline, deduped tool calls, sources, and duration/usage/cost metrics.",
+    "deps": [],
+    "endpoints": []
+   },
+   {
+    "name": "agent_trace",
+    "kind": "function",
+    "signature": "def agent_trace(run_id, *, limit=50, cursor=None):",
+    "line": 2293,
+    "purpose": "Fetch an agent run's full event stream (auto-paginating agent_events), JSON-decode string event data, and return a typed AgentTrace.",
+    "deps": [
+     "agent_events",
+     "AgentTrace",
+     "json"
+    ],
+    "endpoints": [
+     "/agent/runs/{run_id}/events (via agent_events)"
+    ]
+   },
+   {
+    "name": "agent",
+    "kind": "function",
+    "signature": "def agent(query: str, *, system_prompt: Optional[str] = None, output_schema: Optional[dict] = None, effort: str = \"auto\", previous_run_id: Optional[str] = None, metadata: Optional[dict] = None, data: Optional[List[dict]] = None, exclusion: Optional[List[dict]] = None, data_sources: Optional[List[str]] = None, timeout: float = 120.0, poll_interval: float = 2.0, raise_on_failed: bool = True) -> AgentRun:",
+    "line": 2329,
+    "purpose": "Create an Exa agentic run via POST /agent/runs, then poll GET /agent/runs/{id} with backoff until terminal or deadline; raises on timeout, API errors, or (by default) a failed run.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "AgentRun",
+     "_poll_until",
+     "ExaError",
+     "time"
+    ],
+    "endpoints": [
+     "/agent/runs",
+     "/agent/runs/{id}"
+    ]
+   },
+   {
+    "name": "agent_chat",
+    "kind": "function",
+    "signature": "def agent_chat(query, *, system_prompt=None, turns=1, output_schema=None, schemas=None, effort=\"auto\", timeout=150.0, poll_interval=2.0):",
+    "line": 2431,
+    "purpose": "Run `turns` chained agent() runs, threading each completed run id as previous_run_id; returns {run_id, text, grounding, citations, turns} for the last turn.",
+    "deps": [
+     "agent"
+    ],
+    "endpoints": [
+     "/agent/runs (via agent)",
+     "/agent/runs/{id} (via agent)"
+    ]
+   },
+   {
+    "name": "agent_structured",
+    "kind": "function",
+    "signature": "def agent_structured(query: str, output_schema: dict, **kwargs) -> AgentRun:",
+    "line": 2489,
+    "purpose": "Convenience wrapper over agent() that raises ExaError if the completed run produced no structured output.",
+    "deps": [
+     "agent",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/agent/runs (via agent)",
+     "/agent/runs/{id} (via agent)"
+    ]
+   },
+   {
+    "name": "find_similar",
+    "kind": "function",
+    "signature": "def find_similar(url, *, num_results: int = 5, category: Optional[str] = None, include_domains=None, exclude_domains=None, exclude_source_domain: bool = False, start_published_date: Optional[str] = None, end_published_date: Optional[str] = None, with_text: bool = False, max_characters: Optional[int] = None, text_verbosity: Optional[str] = None, with_highlights: bool = False, highlights_query: Optional[str] = None, highlights_max_characters: Optional[int] = None, with_summary: bool = False, summary_query: Optional[str] = None, summary_schema: Optional[dict] = None, extras_links: int = 0, extras_image_links: int = 0, extras_rich_links: int = 0, extras_rich_image_links: int = 0, extras_code_blocks: int = 0, max_age_hours: Optional[int] = None, subpages: int = 0, subpage_target=None, include_sections=None, exclude_sections=None, include_html_tags: bool = False, livecrawl: Optional[str] = None, livecrawl_timeout: Optional[int] = None, timeout: float = 45.0) -> SearchResults:",
+    "line": 2505,
+    "purpose": "POST /findSimilar with a seed URL plus category/domain/date/rich-content options; validates params and returns a SearchResults of similar pages.",
+    "deps": [
+     "_category_canon",
+     "_validate_search_params",
+     "_get_api_key",
+     "_contents_block",
+     "_request",
+     "Result",
+     "SearchResults"
+    ],
+    "endpoints": [
+     "/findSimilar"
+    ]
+   },
+   {
+    "name": "similar_to",
+    "kind": "function",
+    "signature": "def similar_to(url, **kwargs) -> SearchResults:",
+    "line": 2596,
+    "purpose": "Alias for find_similar with the same keyword arguments (documented as the friendlier 'more like this' name).",
+    "deps": [
+     "find_similar"
+    ],
+    "endpoints": [
+     "/findSimilar (via find_similar)"
+    ]
+   }
+  ],
+  "shared_state": [
+   "_CLIENT (module-level, set lazily by _http() which _request uses - touched via agent/agent_events/find_similar calls)",
+   "_API_KEY_CACHE (module-level dict read/updated by _get_api_key, called by agent, agent_events and find_similar)"
+  ],
+  "defects": [
+   {
+    "line": 2406,
+    "severity": "medium",
+    "category": "inconsistent error handling",
+    "description": "agent() early-returns a terminal run created already terminal (`if run.done: return run`) without running the `raise_on_failed` check at line 2425. If POST /agent/runs returns a run that is already `failed` (rare per the comment, but e.g. an instantly-failing continuation), the default `raise_on_failed=True` contract documented in the docstring (lines 2368-2369, 2375-2377) is violated: a failed AgentRun is silently returned instead of raising ExaError, unlike the poll path which does raise.",
+    "suggestion": "Move/apply the `if raise_on_failed and run.status == \"failed\": raise` check after the early return as well (check both the pre-poll and post-poll run objects)."
+   },
+   {
+    "line": 2409,
+    "severity": "medium",
+    "category": "contract drift / wrong default",
+    "description": "The docstring says `timeout` is the 'Max total wall-clock seconds to wait for completion' (line 2366), but `deadline = time.time() + timeout` is computed AFTER the create call at line 2404, which itself runs with `timeout=min(timeout, 30)`; each in-flight poll GET at line 2412 also carries `timeout=min(timeout, 45)`. Total elapsed wall-clock can therefore exceed `timeout` by up to ~30s (create) + up to ~45s (one in-flight poll) for default timeout=120, and for small timeouts (e.g. timeout=10) the actual wait can be roughly double the promised bound.",
+    "suggestion": "Subtract elapsed time from the create call before computing the deadline (e.g. record t0 before POST and use `deadline = t0 + timeout`), and/or cap the per-poll request timeout by remaining time."
+   },
+   {
+    "line": 2317,
+    "severity": "low",
+    "category": "crash on malformed input (AttributeError)",
+    "description": "agent_trace() wraps json.loads of a string event `data` in `try/except: pass` (lines 2317-2321), so if the API ever returns a string payload that is not valid JSON the field stays a str. AgentTrace._parse then calls `data.get(...)` on that str (e.g. line 2129 `item = data.get(\"item\") or {}`), raising AttributeError 'str' object has no attribute 'get' and crashing agent_trace entirely.",
+    "suggestion": "On parse failure, drop the event or set e[\"data\"] = {} instead of leaving the raw string, or make AgentTrace._parse tolerate non-dict `data` (guard with isinstance(d, dict))."
+   },
+   {
+    "line": 1982,
+    "severity": "low",
+    "category": "None handling crash (TypeError)",
+    "description": "AgentRun.citations iterates `for c in g.get(\"citations\", [])`; the default only covers a missing key. If the API sends a grounding group with `\"citations\": null`, iterating None raises TypeError. The sibling code in this file consistently defends with `or []` (e.g. AgentRun.__init__ line 1967, AgentTrace._parse lines 2129/2142), so a null here is handled less defensively than the rest of the module.",
+    "suggestion": "Use `for c in (g.get(\"citations\") or []):`."
+   }
+  ]
+ },
+ "af750048a9b844c83": {
+  "module": "exa",
+  "section": "exa-imports-events-research",
+  "line_range": "3922-4470",
+  "functions": [
+   {
+    "name": "import_create",
+    "kind": "function",
+    "signature": "def import_create(csv_path, *, title, entity, identifier_column=0, metadata=None, timeout=60.0):",
+    "line": 3922,
+    "purpose": "Upload a local CSV of entity records as seed/scope for webset searches/enrichments; returns the created import object with status.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL",
+     "os.path.getsize",
+     "open"
+    ],
+    "endpoints": [
+     "/v0/imports"
+    ],
+    "notes": "Body carries format/size/count/entity/title/csv.identifier. `count` is set to a raw line count (see defects)."
+   },
+   {
+    "name": "imports_list",
+    "kind": "function",
+    "signature": "def imports_list(*, limit=50, cursor=None):",
+    "line": 3954,
+    "purpose": "List imports for the authenticated team with optional cursor pagination.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/imports"
+    ]
+   },
+   {
+    "name": "import_get",
+    "kind": "function",
+    "signature": "def import_get(import_id):",
+    "line": 3961,
+    "purpose": "Fetch a single import by id.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/imports/{import_id}"
+    ]
+   },
+   {
+    "name": "import_delete",
+    "kind": "function",
+    "signature": "def import_delete(import_id):",
+    "line": 3966,
+    "purpose": "Delete an import and detach it from websets.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/imports/{import_id}"
+    ]
+   },
+   {
+    "name": "import_update",
+    "kind": "function",
+    "signature": "def import_update(import_id, *, title=None, metadata=None):",
+    "line": 3971,
+    "purpose": "PATCH an import's title and/or metadata (PATCH with a possibly-empty body).",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/imports/{import_id}"
+    ],
+    "notes": "title uses truthiness check (`if title:`) so an empty-string title is dropped; metadata uses `is not None`."
+   },
+   {
+    "name": "webhook_create",
+    "kind": "function",
+    "signature": "def webhook_create(events, url, *, metadata=None):",
+    "line": 3981,
+    "purpose": "Register a webhook to receive webset/import/monitor events; returns the webhook object incl. its signature secret.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/webhooks"
+    ]
+   },
+   {
+    "name": "webhook_list",
+    "kind": "function",
+    "signature": "def webhook_list(*, limit=50, cursor=None):",
+    "line": 3997,
+    "purpose": "List all webhooks with optional cursor pagination.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/webhooks"
+    ]
+   },
+   {
+    "name": "webhook_get",
+    "kind": "function",
+    "signature": "def webhook_get(webhook_id):",
+    "line": 4004,
+    "purpose": "Fetch a single webhook by id.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/webhooks/{webhook_id}"
+    ]
+   },
+   {
+    "name": "webhook_update",
+    "kind": "function",
+    "signature": "def webhook_update(webhook_id, *, events=None, url=None, metadata=None):",
+    "line": 4008,
+    "purpose": "PATCH a webhook's events/url/metadata.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/webhooks/{webhook_id}"
+    ]
+   },
+   {
+    "name": "webhook_delete",
+    "kind": "function",
+    "signature": "def webhook_delete(webhook_id):",
+    "line": 4018,
+    "purpose": "Delete a webhook by id.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/webhooks/{webhook_id}"
+    ]
+   },
+   {
+    "name": "webhook_attempts",
+    "kind": "function",
+    "signature": "def webhook_attempts(webhook_id, *, limit=50, cursor=None, event_type=None, successful=None):",
+    "line": 4022,
+    "purpose": "List webhook delivery attempts with optional event_type/successful filters; returns raw {data,hasMore,nextCursor} payload.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/webhooks/{webhook_id}/attempts"
+    ],
+    "notes": "Boolean `successful` serialized to the strings 'true'/'false' in the query string."
+   },
+   {
+    "name": "event_list",
+    "kind": "function",
+    "signature": "def event_list(*, limit=50, cursor=None, event_type=None, types=None, created_before=None, created_after=None):",
+    "line": 4049,
+    "purpose": "List recent team WebSet/import/... events with type and created-time bounds; returns {data,hasMore,nextCursor}.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/events"
+    ],
+    "notes": "Sets both a singular `type` param (from event_type) and a plural `types` list that also re-appends event_type (see defects)."
+   },
+   {
+    "name": "event_get",
+    "kind": "function",
+    "signature": "def event_get(event_id):",
+    "line": 4081,
+    "purpose": "Fetch a single event by id.",
+    "deps": [
+     "_request",
+     "_get_api_key",
+     "WEBSETS_API_URL"
+    ],
+    "endpoints": [
+     "/v0/events/{event_id}"
+    ]
+   },
+   {
+    "name": "deep_research",
+    "kind": "function",
+    "signature": "def deep_research(queries, *, num_results: int = 8, mode: str = \"auto\", search_type: Optional[str] = None, category: Optional[str] = None, include_domains=None, exclude_domains=None, start_published_date: Optional[str] = None, end_published_date: Optional[str] = None, with_text: bool = False, with_highlights: bool = True, highlights_query: Optional[str] = None, highlights_max_characters: Optional[int] = None, max_characters: Optional[int] = None, text_verbosity: Optional[str] = None, with_summary: bool = False, summary_query: Optional[str] = None, summary_schema: Optional[dict] = None, extras_links: int = 0, extras_image_links: int = 0, extras_rich_links: int = 0, extras_rich_image_links: int = 0, extras_code_blocks: int = 0, max_age_hours: Optional[int] = None, subpages: int = 0, output_schema: Optional[dict] = None, system_prompt: Optional[str] = None, user_location: Optional[str] = None, moderation: bool = False, timeout: float = 120.0, dedupe: bool = True) -> SearchResults:",
+    "line": 4091,
+    "purpose": "Fan out one search() per related query, merge and de-duplicate by canonical URL, re-rank shared URLs first; returns a merged SearchResults with extras[query_hits].",
+    "deps": [
+     "search",
+     "Result",
+     "SearchResults",
+     "ExaError",
+     "_sum_search_times_defined"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "Runs len(queries) serial search() calls (bounded, no unbounded loop). Dedupe path drops results lacking both url and id. Cost deliberately reported as None."
+   },
+   {
+    "name": "merge_searches",
+    "kind": "function",
+    "signature": "def merge_searches(*search_results, dedupe: bool = True) -> SearchResults:",
+    "line": 4232,
+    "purpose": "Merge multiple SearchResults (or iterables of Result/dict) into one, de-duplicating by canonical URL and tagging extras[query_hits].",
+    "deps": [
+     "Result",
+     "SearchResults",
+     "ExaError",
+     "_sum_search_times_defined"
+    ],
+    "endpoints": [],
+    "notes": "No API call; operates on already-fetched results. Fast-path for single input only fires when dedupe=True."
+   },
+   {
+    "name": "news_roundup",
+    "kind": "function",
+    "signature": "def news_roundup(query, *, days: int = 10, num_results: int = 5, highlights_cap: int = 250, timeout: float = 45.0) -> SearchResults:",
+    "line": 4320,
+    "purpose": "Sweep the trailing `days` single-day news-mode search windows, de-dup by URL, rank by days-appeared; returns SearchResults with a .window_counts attr and extras[days_seen] per result.",
+    "deps": [
+     "search",
+     "Result",
+     "SearchResults",
+     "ExaError",
+     "datetime",
+     "timedelta",
+     "timezone"
+    ],
+    "endpoints": [
+     "/search"
+    ],
+    "notes": "days serial search() calls, each ExaError swallowed per window (not fatal). request_id is synthetic ('day0,day1,...'). UTC day windows."
+   },
+   {
+    "name": "company_dossier",
+    "kind": "function",
+    "signature": "def company_dossier(company: str, *, num_results: int = 3, fetch_website: bool = True, text_cap: int = 1800, max_age_hours: Optional[int] = None, timeout: float = 60.0) -> dict:",
+    "line": 4396,
+    "purpose": "Assemble a company brief: company-mode search -> normalized entity profile + summary + optional homepage body fetch.",
+    "deps": [
+     "search",
+     "fetch",
+     "entity_summary",
+     "Result",
+     "SearchResults",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/search",
+     "/contents"
+    ],
+    "notes": "See defects: default max_age_hours=None makes fetch() return a string so website_* fields are never populated on the normal success path."
+   },
+   {
+    "name": "_coerce_result_list",
+    "kind": "function",
+    "signature": "def _coerce_result_list(items) -> List[Result]:",
+    "line": 4465,
+    "purpose": "Normalize an iterable of Result/dict into a list of Result (1-based indices).",
+    "deps": [
+     "Result"
+    ],
+    "endpoints": [],
+    "notes": "Truncated at range end; body completes at line 4472. Internal helper used by diff_results (next section)."
+   }
+  ],
+  "defects": [
+   {
+    "line": 4453,
+    "severity": "high",
+    "category": "contract-drift / silently-wrong-data",
+    "description": "In the default call (max_age_hours=None), `fetch([result_r.url], max_characters=text_cap, include_sections=[\"body\"], text_verbosity=\"standard\", max_age_hours=None)` hits fetch()'s backward-compat single-URL string branch (fetch lines 1823-1832: condition `len(results)==1 and mode==\"text\" and not(with_highlights or with_summary) and not extras_links and max_age_hours is None` is all True, and it does not account for include_sections/text_verbosity). So `body` is a `str`, not a list. The `isinstance(body, list)` check at line 4456 is then False, so website_url/website_title/website_text are NEVER added, and no website_error is set either. The docstring promises these fields on a successful fetch_website, but the normal success path returns a dict without them.",
+    "suggestion": "Pass include_meta=True (fetch then returns an envelope with 'results'), or force a non-None max_age_hours, or make fetch() treat include_sections/text_verbosity as 'rich options' that disable the string form. Then read body['results'][0]['text']."
+   },
+   {
+    "line": 3940,
+    "severity": "low",
+    "category": "off-by-one",
+    "description": "`nrows = sum(1 for _ in fh)` counts every line of the CSV including the header row, and this is sent as the `count` body field (line 3944). If the API's `count` is expected to be the number of entity records, it is off by one (and by more if the file has a trailing empty line).",
+    "suggestion": "Subtract the header line (and any blank lines) so `count` reflects record count, e.g. count data rows only."
+   },
+   {
+    "line": 4205,
+    "severity": "low",
+    "category": "inconsistent-handling",
+    "description": "In the dedupe path, results lacking both url and id are silently dropped (`u = _canon(...)`; `if not u: continue`), so such results never appear in the merged SearchResults. merge_searches (line 4277-4281) preserves them in `extra_results` instead. The two functions handle the same no-URL case inconsistently.",
+    "suggestion": "Preserve no-URL results (append after the URL-deduped ones, as merge_searches does) rather than dropping them."
+   },
+   {
+    "line": 4255,
+    "severity": "low",
+    "category": "dead-code",
+    "description": "`return search_results[0] if isinstance(search_results[0], SearchResults) else search_results[0]` has two identical branches, so the ternary is a no-op. Also the documented 'returned unchanged (fast path)' for a single input only applies when dedupe=True; with dedupe=False and one input it falls through to a full merge that re-indexes and returns a new SearchResults.",
+    "suggestion": "Simplify to `return search_results[0]` and clarify the docstring that the unchanged fast path is only for dedupe=True."
+   },
+   {
+    "line": 4075,
+    "severity": "low",
+    "category": "inconsistent-params",
+    "description": "event_list sends the same event-type filter twice: a singular `type` param (line 4068) AND a plural `types` list into which event_type is also re-appended (lines 4072-4074). When event_type is given, its value is thus present in both query params, which is redundant and risks the API double-applying or rejecting the combined filter.",
+    "suggestion": "Pick one representation: either set `type` only when event_type is the sole filter, or rely solely on `types` and drop the singular `type` param."
+   }
+  ],
+  "shared_state": []
+ },
+ "afe98dd7a94574236": {
+  "module": "exa",
+  "section": "exa-fetch-answer",
+  "line_range": "1676-1941",
+  "functions": [
+   {
+    "name": "fetch",
+    "kind": "function",
+    "line": 1679,
+    "signature": "def fetch(\n    urls=None,\n    ids=None,\n    *,\n    mode: str = \"text\",\n    max_characters: int = 1000,\n    text_verbosity: Optional[str] = None,\n    with_highlights: bool = False,\n    highlights_query: Optional[str] = None,\n    highlights_max_characters: Optional[int] = None,\n    with_summary: bool = False,\n    summary_query: Optional[str] = None,\n    summary_schema: Optional[dict] = None,\n    extras_links: int = 0,\n    extras_image_links: int = 0,\n    extras_rich_links: int = 0,\n    extras_rich_image_links: int = 0,\n    extras_code_blocks: int = 0,\n    max_age_hours: Optional[int] = None,\n    subpages: int = 0,\n    subpage_target=None,\n    livecrawl: Optional[str] = None,\n    livecrawl_timeout: Optional[int] = None,\n    include_sections=None, exclude_sections=None, include_html_tags: bool = False,\n    compliance: Optional[str] = None,\n    include_meta: bool = False,\n    timeout: float = 45.0,\n) -> Union[List[dict], str, dict]:",
+    "purpose": "Fetch page content/highlights/summary/extras for one or more URLs or document IDs via POST /contents; returns a list of result dicts, or a legacy formatted string for a single plain-text fetch, or an envelope dict when include_meta=True.",
+    "deps": [
+     "_get_api_key",
+     "_contents_block",
+     "_request",
+     "ExaError"
+    ],
+    "endpoints": [
+     "/contents"
+    ],
+    "notes": "Raises ExaError if both or neither of urls/ids are supplied (line 1730). status_map keys off id, falling back to url (line 1779)."
+   },
+   {
+    "name": "Answer",
+    "kind": "class",
+    "line": 1842,
+    "signature": "class Answer:",
+    "purpose": "Result container for answer(): synthesized answer string/dict plus citation sources.",
+    "deps": [],
+    "endpoints": [],
+    "notes": "Holds raw, request_id, answer, citations, cost_dollars."
+   },
+   {
+    "name": "Answer.__init__",
+    "kind": "method",
+    "line": 1850,
+    "signature": "def __init__(self, raw: dict):",
+    "purpose": "Populate Answer from the raw /answer response dict.",
+    "deps": [],
+    "endpoints": [],
+    "notes": "citations = raw.get(\"citations\", []) is None-unsafe (see defects)."
+   },
+   {
+    "name": "Answer.sources",
+    "kind": "method",
+    "line": 1858,
+    "signature": "@property\ndef sources(self) -> List[str]:",
+    "purpose": "Return the list of cited source URLs.",
+    "deps": [
+     "self.citations"
+    ],
+    "endpoints": [],
+    "notes": "Iterates self.citations; crashes if it is None."
+   },
+   {
+    "name": "Answer.to_dict",
+    "kind": "method",
+    "line": 1862,
+    "signature": "def to_dict(self) -> dict:",
+    "purpose": "Flatten the Answer to a plain dict (answer, citations, sources, cost).",
+    "deps": [
+     "self.sources"
+    ],
+    "endpoints": [],
+    "notes": "Uses len(self.citations) and self.sources; crashes on None citations."
+   },
+   {
+    "name": "Answer.to_markdown",
+    "kind": "method",
+    "line": 1872,
+    "signature": "def to_markdown(self) -> str:",
+    "purpose": "Render the answer plus numbered, linked sources as Markdown.",
+    "deps": [
+     "self.citations",
+     "self.answer"
+    ],
+    "endpoints": [],
+    "notes": "str(self.answer) emits Python repr when answer is a dict (output_schema case)."
+   },
+   {
+    "name": "Answer.__repr__",
+    "kind": "method",
+    "line": 1890,
+    "signature": "def __repr__(self) -> str:",
+    "purpose": "Compact repr showing source count and request_id.",
+    "deps": [
+     "self.citations",
+     "self.request_id"
+    ],
+    "endpoints": [],
+    "notes": "Uses len(self.citations); crashes on None citations."
+   },
+   {
+    "name": "answer",
+    "kind": "function",
+    "line": 1895,
+    "signature": "def answer(\n    query: str,\n    *,\n    output_schema: Optional[dict] = None,\n    text: bool = False,\n    stream: bool = False,\n    citation_format: Optional[dict] = None,\n    timeout: float = 90.0,\n) -> Answer:",
+    "purpose": "POST a natural-language query to /answer and wrap the response in an Answer.",
+    "deps": [
+     "_get_api_key",
+     "_request",
+     "Answer"
+    ],
+    "endpoints": [
+     "/answer"
+    ],
+    "notes": "Always parses a single JSON body via _request; the stream=True path is not handled (see defects)."
+   }
+  ],
+  "defects": [
+   {
+    "line": 1939,
+    "severity": "medium",
+    "category": "wrong-return-shape",
+    "description": "answer() accepts and forwards an undocumented `stream` parameter (declared line 1900, not in the Args docstring) into body[\"stream\"] (line 1939), but routes through _request() which does resp.json(). When stream=True the /answer endpoint returns an SSE stream (as stream_answer at line 2642 confirms by posting stream=True and parsing SSE lines), so resp.json() raises an uncaught httpx/JSON decode error instead of returning an Answer. Passing stream=True to answer() crashes with an obscure error; the documented streaming path is stream_answer().",
+    "suggestion": "Either document/validate stream (raise a clear error directing the user to stream_answer when stream=True) or parse the SSE stream; simplest is to reject stream=True with an ExaError pointing to stream_answer()."
+   },
+   {
+    "line": 1824,
+    "severity": "medium",
+    "category": "contract-drift",
+    "description": "The legacy string-form guard checks only `not extras_links and max_age_hours is None` (line 1824), ignoring the other rich extras (extras_image_links, extras_rich_links, extras_rich_image_links, extras_code_blocks) and other rich options (text_verbosity, subpages, include_sections, highlights_max_characters). So a single-URL text fetch such as fetch(urls=[u], extras_code_blocks=5) still returns the plain '--- Title ---\\n<body>' string and silently discards the requested structured extras, contradicting the docstring promise that the string form is used only 'when no rich options are requested'.",
+    "suggestion": "Make the guard cover all rich options (any extras_*, text_verbosity, subpages>0, subpage_target, include_sections, etc.) so the structured list is returned whenever a rich option is actually requested."
+   },
+   {
+    "line": 1854,
+    "severity": "medium",
+    "category": "none-handling",
+    "description": "Answer.__init__ sets self.citations = raw.get(\"citations\", []) (line 1854). If the /answer API returns the key with a null value (\"citations\": null) the default is not applied, so citations becomes None; Answer.sources (line 1860), to_dict (line 1866), to_markdown (line 1879) and __repr__ (line 1891) then raise TypeError ('NoneType' not iterable / not a len()). The sibling stream_answer defensively normalizes with `obj.get(\"citations\") or []` (line 2672), confirming empty/absent citations is a real response shape, so Answer should use the same guard.",
+    "suggestion": "Use self.citations = raw.get(\"citations\") or [] to mirror stream_answer and avoid the None crash."
+   },
+   {
+    "line": 1877,
+    "severity": "low",
+    "category": "contract-drift",
+    "description": "Answer.to_markdown renders the answer body with str(self.answer) (line 1877). When output_schema is supplied, self.answer is a dict, and str() emits Python repr (single-quoted, non-JSON) rather than valid JSON, so the '## Answer' block is not a clean structured payload.",
+    "suggestion": "Serialize a dict answer with json.dumps(answer, indent=2, ensure_ascii=False) instead of str() when the answer is not a string."
+   }
+  ],
+  "shared_state": []
+ }
+}

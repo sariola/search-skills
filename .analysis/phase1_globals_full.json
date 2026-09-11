@@ -1,0 +1,770 @@
+{
+  "lenses": [
+    {
+      "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+      "findings": [
+        {
+          "module": "exa",
+          "line": 5522,
+          "severity": "medium",
+          "category": "duplicate-definition-drift",
+          "description": "deprecations is defined twice (line 5522 and line 5768) inside two pasted copies of the 'Round-18' block (headers at lines 5451 and 5697). LIVE definition is line 5768 (last def wins). The two bodies are NOT identical - they have already drifted: the shadowed copy at 5522 has the extra comment '# the model answer itself flags deprecation - record as a signal.' and names the date variable 'start' ('start = end - timedelta(days=max(1, days))' / 'start_published_date=start.strftime(\"%Y-%m-%d\")'), while the live copy at 5768 omits the comment and renames the variable 'st' ('st = end - timedelta(days=max(1, days))' / 'start_published_date=st.strftime(\"%Y-%m-%d\")'). Behavior is functionally equivalent today, but the divergence proves the two copies are maintained independently: an edit to the shadowed copy at 5522 would be silently inert. deprecations is in __all__ (public API).",
+          "evidence": "5522:def deprecations(query: str, *, days=30, timeout=90.0):\n...5553:        start = end - timedelta(days=max(1, days))\n...5556:                    start_published_date=start.strftime(\"%Y-%m-%d\"),\n5768:def deprecations(query: str, *, days=30, timeout=90.0):\n...5798:        st = end - timedelta(days=max(1, days))\n...5801:                    start_published_date=st.strftime(\"%Y-%m-%d\"),",
+          "suggestion": "Delete the entire first shadowed Round-18 block (lines ~5451-5696, which contains the shadowed pkg_releases/_dep_type/deprecations/snippet/code_lint_tips), keeping the live definitions at 5705/5753/5768/5826/5870. The first block's unique function api_reference (line 5625) must be preserved."
+        },
+        {
+          "module": "exa",
+          "line": 5459,
+          "severity": "low",
+          "category": "duplicate-definition",
+          "description": "pkg_releases is defined twice: line 5459 (shadowed, dead) and line 5705 (LIVE, last def wins). The two bodies are byte-identical (same source, sha256 f357589e09efd171f6302167df4d51c1cbb6d7c9bbc92fed18314d42f07c9991), so there is no behavioral difference - pure dead code (~46 lines). pkg_releases is a public name in __all__; callers always get the copy at 5705.",
+          "evidence": "5459:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):\n5705:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):",
+          "suggestion": "Remove the shadowed copy at line 5459 as part of deleting the duplicated Round-18 block."
+        },
+        {
+          "module": "exa",
+          "line": 5507,
+          "severity": "low",
+          "category": "duplicate-definition",
+          "description": "Private helper _dep_type is defined twice: line 5507 (shadowed, dead) and line 5753 (LIVE, last def wins). Bodies are byte-identical (sha256 379eae056a7ef43c2a3819366e26a9d6f454134c883abc493b4a45a90d307e12). Not in __all__ (private); the live copy at 5753 is the one called by the live deprecations at 5768. Pure dead code (~13 lines).",
+          "evidence": "5507:def _dep_type(blob):\n5753:def _dep_type(blob):",
+          "suggestion": "Remove the shadowed copy at line 5507."
+        },
+        {
+          "module": "exa",
+          "line": 5581,
+          "severity": "low",
+          "category": "duplicate-definition",
+          "description": "snippet is defined twice: line 5581 (shadowed, dead) and line 5826 (LIVE, last def wins). Bodies are byte-identical (sha256 82ba6e720f225f7ebec5ebbd8bf34f46313c9624a30f16f1ef930e3a416ef128). snippet is public (in __all__); callers always get the copy at 5826. Pure dead code (~42 lines).",
+          "evidence": "5581:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):\n5826:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):",
+          "suggestion": "Remove the shadowed copy at line 5581."
+        },
+        {
+          "module": "exa",
+          "line": 5672,
+          "severity": "low",
+          "category": "duplicate-definition",
+          "description": "code_lint_tips is defined twice: line 5672 (shadowed, dead) and line 5870 (LIVE, last def wins). Bodies are byte-identical (sha256 6b2f64fbdc160658afbe7f529943c3e35b4b8eba71c57cd9f817ce572e515e33). Public name in __all__; callers always get the copy at 5870. Pure dead code (~20 lines).",
+          "evidence": "5672:def code_lint_tips(query: str, *, timeout=90.0):\n5870:def code_lint_tips(query: str, *, timeout=90.0):",
+          "suggestion": "Remove the shadowed copy at line 5672."
+        }
+      ],
+      "summary": "Exa (/home/ks/repos/search-skills/exa/src/exa/__init__.py): the 'Round-18' developer-workflows section was pasted into the file TWICE (block headers at lines 5451 and 5697). The second block redefines 5 names from the first block: pkg_releases (5459/5705), _dep_type (5507/5753), deprecations (5522/5768), snippet (5581/5826), code_lint_tips (5672/5870). In all 5 pairs the LAST definition is LIVE (Python last-def-wins); the earlier copies are dead. Four pairs are byte-identical (verified by hashing the full function source) - pure dead code. The deprecations pair has already drifted (comment removed, local variable renamed start->st between the copies), which is the concrete maintenance hazard: a future behavioral edit to the shadowed copy at line 5522 would be silently ignored because the live copy at 5768 shadows it. No crash or wrong-result impact in normal calls today, since every live body matches (functionally) the intended one. The two blocks also each carry a unique function that must be kept (api_reference at 5625 in block 1; is_deprecated at 5894 in block 2). Fix: delete the shadowed block ~5451-5696 while preserving api_reference. Brave (/home/ks/repos/search-skills/brave/src/brave/__init__.py): zero duplicate top-level names - every column-0 def/class name is unique, no findings. No column-0 duplicate variable assignments in either file. No __all__ collisions (the duplicated exa names each appear once in __all__, matching the single live definition)."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "findings": [
+        {
+          "module": "exa",
+          "line": 34,
+          "severity": "low",
+          "category": "lazy-init-race",
+          "description": "Check-then-act lazy init of the process-lifetime httpx.Client on module global _CLIENT is unsynchronized. Two threads entering _http() concurrently can both observe _CLIENT is None and both construct httpx.Client; the loser's client is discarded, leaving a closed/abandoned client with idle connections (small resource leak). No crash or wrong results.",
+          "evidence": "exa/__init__.py:27 _CLIENT = None ; :31-40 def _http() -> \"httpx.Client\": \"\"\"Process-lifetime client. Keep-alive pool; thread-safe for request().\"\"\"\\n    global _CLIENT\\n    if _CLIENT is None:\\n        _CLIENT = httpx.Client(limits=_ENGINE_LIMITS, follow_redirects=True, headers={\"Accept\": \"application/json\"})\\n    return _CLIENT",
+          "suggestion": "Guard with a module-level threading.Lock (double-checked locking) or pre-create the client at import time; keep the returned object immutable afterwards."
+        },
+        {
+          "module": "exa",
+          "line": 45,
+          "severity": "low",
+          "category": "lazy-init-race",
+          "description": "Check-then-act lazy init of the process-lifetime ThreadPoolExecutor on module global _WORKERS is unsynchronized (same pattern as _CLIENT). A racy concurrent _pool() call leaks a second executor. Note: _fanout() (line 67) is DEAD CODE in exa \u2014 grep shows zero call sites outside its own definition, and no exa public function fans work out \u2014 so in exa this race is only reachable if a caller invokes the private _fanout/_pool from multiple threads; today it is effectively dormant.",
+          "evidence": "exa/__init__.py:28 _WORKERS = None ; :43-47 def _pool(n: int = 8) -> ThreadPoolExecutor:\\n    global _WORKERS\\n    if _WORKERS is None:\\n        _WORKERS = ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"exa\")\\n    return _WORKERS ; :67 def _fanout(jobs, *, concurrency: int = 8): ... :71 pool = _pool(max(8, int(concurrency or 8))) \u2014 and grep '_fanout(' in the exa file returns only line 67 (the def).",
+          "suggestion": "Guard with a module-level lock; or delete the unused _fanout/_pool/_WORKERS from exa (dead code) to remove the surface entirely."
+        },
+        {
+          "module": "exa",
+          "line": 475,
+          "severity": "low",
+          "category": "check-then-act-cache-race",
+          "description": "Module-level mutable dict _API_KEY_CACHE is read/written in _get_api_key() with an unsynchronized check-then-act: `if label in _API_KEY_CACHE: return ...` then `_API_KEY_CACHE[label] = key` after doing filesystem/env work. Under genuine multithreaded entry, several threads can miss the cache simultaneously, each run _seek_api_key() and each write the cache. Consequence is benign (identical value, atomic dict stores under the GIL, idempotent os.environ.setdefault), but it is a real data race on shared mutable state. In exa this path is only concurrent if an external caller threads the public functions, since exa's _fanout is dead code.",
+          "evidence": "exa/__init__.py:409 _API_KEY_CACHE = {} ; :473-488 def _get_api_key():\\n    label = _API_LABEL\\n    if label in _API_KEY_CACHE:\\n        return _API_KEY_CACHE[label]\\n    key = _seek_api_key(_API_KEY_NAMES)\\n    ...\\n    for n in _API_KEY_NAMES:\\n        os.environ.setdefault(n, key)\\n    _API_KEY_CACHE[label] = key\\n    return key",
+          "suggestion": "Protect the check-then-act with a lock (or accept the race and document it as benign); also note the cache is process-lifetime: a rotated key in os.environ is never re-read once cached."
+        },
+        {
+          "module": "brave",
+          "line": 41,
+          "severity": "low",
+          "category": "lazy-init-race",
+          "description": "Check-then-act lazy init of the process-lifetime ThreadPoolExecutor on module global _WORKERS, identical to exa \u2014 but UNLIKE exa it is live: _fanout() is called by real public entrypoints, so on the FIRST process-wide fanout call, N worker threads plus the main thread can all execute _pool() before any assignment lands. Losers' ThreadPoolExecutor instances leak (they were never used, so their worker threads exit at join/idle, but the object + file descriptors survive until GC). No wrong results: all callers use whichever executor they got.",
+          "evidence": "brave/__init__.py:25 _WORKERS = None ; :39-43 def _pool(n: int = 8) -> ThreadPoolExecutor:\\n    global _WORKERS\\n    if _WORKERS is None:\\n        _WORKERS = ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"brave\")\\n    return _WORKERS ; live call sites: :1982 _fanout([...web/news/video...], concurrency=3) inside search mode=\"all\"; :3142 _fanout(jobs, concurrency=2) in thumbnails(); :3632 _fanout([...probe...], concurrency=8); :5424 _fanout(jobs, concurrency=4) in mosaic(); :5898 _fanout([...], concurrency=concurrency) in batch().",
+          "suggestion": "Guard with a module-level lock, or eagerly create the pool at import / first main-thread call (e.g., in module __init__) so the init path is single-threaded."
+        },
+        {
+          "module": "brave",
+          "line": 954,
+          "severity": "medium",
+          "category": "shared-cache-race-under-real-fanout",
+          "description": "Module-level mutable dict _API_KEY_CACHE is checked and written in _get_api_key() with check-then-act, and in brave this IS reached concurrently by real worker threads: every _fanout thunk calls _request() -> _get_api_key(). On the first fanout call with a cold cache (no BRAVE_API_KEY pre-exported, key found via dotenv/key-file), all N worker threads (concurrency up to 8 in crawl, 4 in mosaic, 3 in mode=all) pass `if label in _API_KEY_CACHE` before any write, each performs the full _seek_api_key() filesystem walk in parallel, and each executes `_API_KEY_CACHE[label] = key` concurrently. Consequence is still benign in practice (deterministic identical value, GIL-atomic dict stores, idempotent setdefault) \u2014 no crash/wrong key \u2014 but this is the one module-global in the audit that is actually read-modify-written by concurrently spawned threads as a matter of normal operation, not just in theory.",
+          "evidence": "brave/__init__.py:888 _API_KEY_CACHE = {} ; :952-967 def _get_api_key():\\n    label = _API_LABEL\\n    if label in _API_KEY_CACHE:\\n        return _API_KEY_CACHE[label]\\n    key = _seek_api_key(_API_KEY_NAMES)\\n    ...\\n    for n in _API_KEY_NAMES:\\n        os.environ.setdefault(n, key)\\n    _API_KEY_CACHE[label] = key\\n    return key ; thunk path: :5893-5896 def _one(q): ... return _search_full(...) / search(...) -> :981 key = _get_api_key() ; fanout: :5898 gathered = _fanout([(q, (lambda q=q: _one(q))) for q in qs], concurrency=concurrency)",
+          "suggestion": "Resolve the key once in the main thread before building jobs (e.g., key = _get_api_key() in batch()/mosaic()/crawl() and pass it to the thunks), or guard the cache check-then-act with a lock; consider invalidating the cache on 401 so a rotated key is picked up."
+        },
+        {
+          "module": "both",
+          "line": 32,
+          "severity": "medium",
+          "category": "shared-global-contract-drift",
+          "description": "Both modules expose one process-lifetime httpx.Client (global _CLIENT, lazy-init at exa:34 / brave:30) and its docstring asserts 'thread-safe for request()'. httpx's own documentation states a Client is not safe for CONCURRENT use of .close() while requests are in flight; brave in particular drives concurrent request() calls through its _fanout pool (up to 8 in parallel in crawl()). If any actor calls _CLIENT.close() (cleanup hook, test teardown, an embedding host) while fanout workers are mid-request, workers raise RuntimeError('Cannot close a client instance which is still in use') and every subsequent search in the process fails permanently \u2014 the global is never re-created. The modules never call close() themselves, so this is a latent contract drift on the shared global, not an in-module bug.",
+          "evidence": "exa/__init__.py:31-40 def _http() -> \"httpx.Client\":\\n    \"\"\"Process-lifetime client. Keep-alive pool; thread-safe for request().\"\"\"\\n    global _CLIENT\\n    if _CLIENT is None:\\n        _CLIENT = httpx.Client(limits=_ENGINE_LIMITS, ...)\\n    return _CLIENT \u2014 brave/__init__.py:27-36 is byte-identical (follow_redirects=False); concurrent use is live in brave via :3632 _fanout([...probe...], concurrency=8) where each thunk does _http().get(...).",
+          "suggestion": "Remove the blanket 'thread-safe' claim and document the close() hazard; or return a fresh request context (httpx use as contextmanager) when concurrency is active, or serialize close() with the same lock used for lazy init."
+        }
+      ],
+      "summary": "Both modules carry the same three module-level mutable globals: _CLIENT (lazy httpx.Client), _WORKERS (lazy process-lifetime ThreadPoolExecutor), and _API_KEY_CACHE (dict). All mutations are unsynchronized check-then-act patterns, but none is exploitable into a crash or wrong results under CPython's GIL: _CLIENT/_WORKERS races merely create a discarded duplicate object (leak), and the _API_KEY_CACHE race re-runs a deterministic, idempotent key lookup and writes the same value. Thread usage is asymmetric: brave's _fanout is live (search mode=all :1982, thumbnails :3142, crawl :3632, mosaic :5424, batch :5898), so on a cold first fanout call _WORKERS, _CLIENT, and _API_KEY_CACHE are all touched by concurrently spawned worker threads \u2014 the _API_KEY_CACHE check-then-act under real concurrency is the most significant finding, though still benign (parallel redundant key discovery, not corruption). In exa, _fanout/_pool/_WORKERS are dead code (zero call sites), so its lazy-init races are only theoretical unless an external caller threads the public functions; exa's _get_api_key is then only ever hit sequentially per process. All other top-level collections (PATHS, MODES, LOC_HEADERS, VALID_CATEGORIES, SEARCH_TYPES, _STOPWORDS, _ENTITY_PROFILE_KEYS, _KIND_SCHEMA, _UNITCONV_FACTORS, _RICH_VERTICALS, _DOC_DOMAINS, etc.) are verified read-only after import \u2014 no runtime .update/.append/index-assignment found \u2014 and _fanout deliberately collects via per-future results rather than a shared output dict, so there is no shared-dict write race. The one genuine contract concern is the shared _CLIENT's 'thread-safe for request()' docstring (both, exa:32/brave:28), which omits httpx's documented hazard of concurrent close(); a premature close while brave's fanout is in flight would poison every subsequent call process-wide. Net assessment: no critical or high-severity data races; the state is shared but effectively race-harmless, with one medium live cache-race surface in brave and two low-severity structural smells duplicated across both modules."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "summary": "The dual sync/async wrapper design (exa:129-335, brave:495-723) is functionally sound for the primary use case \u2014 `await fn(...)` on a dict/str/list/None works, and sync callers keep working because the wrappers subclass the built-ins. The bool-before-int ordering in _wrap_result is correct for plain values. However, the mechanism has several verified defects rooted in one structural flaw: because all six _Async* wrappers subclass their built-in (and _AsyncBool subclasses int, not bool), the `hasattr(value, \"__await__\")` \"return untouched\" guard in _wrap_result is dead code \u2014 the isinstance checks always match first, so an already-wrapped value is silently re-wrapped into a NEW object instead of returned as-is. This makes wrapping non-idempotent and demotes a re-wrapped _AsyncBool to _AsyncInt. The _apply_async_to guard `__name__==\"_async_aware\"` is likewise dead because functools.wraps copies the original __name__. Additionally, _apply_async_to(globals()) wraps EVERY public module name that is a FunctionType, including the stdlib-imported parsedate_to_datetime, whose datetime return becomes a _AsyncScalar proxy that breaks datetime arithmetic. Awaiting is also asymmetric: containers yield shallow copies (top-level detached, nested objects still shared) while scalars/result-classes yield the live object, contradicting the module's \"await yields the SAME real result\" contract and giving sync-vs-async callers different aliasing semantics. No public function currently returns a bare bool or None, so the demotion and None-identity defects are latent/low-impact today but are real edge cases.",
+      "findings": [
+        {
+          "module": "both",
+          "severity": "high",
+          "category": "correctness",
+          "line": 232,
+          "description": "The `hasattr(value, \"__await__\"): return value` guard in _wrap_result is dead code. Because _AsyncDict/_AsyncStr/_AsyncList/_AsyncInt/_AsyncFloat/_AsyncBool all subclass their built-in base type, the isinstance checks at the top of _wrap_result (dict/str/list/bool/int/float) always match an already-wrapped value BEFORE the guard is reached. As a result an already-wrapped value is re-wrapped into a brand-new wrapper object instead of being returned untouched, making wrapping non-idempotent and defeating the 'return untouched' contract the guard documents.",
+          "evidence": "exa:216-235 (brave:605-624). Verified: `wd=exa._wrap_result({'a':1}); exa._wrap_result(wd) is wd` -> False (new _AsyncDict created, guard never fires). All six wrapper instances have __await__ yet each still matches its base isinstance branch first (dict/str/list/bool->int/float). The guard only ever catches _AsyncScalar (which has no base isinstance match) and result classes that already define __await__.",
+          "suggestion": "Check `hasattr(value, \"__await__\")` FIRST (before the isinstance chain) so already-wrapped / awaitable values are returned as-is, or re-wrap only when `type(value)` is exactly a built-in (type(value) is dict/str/list/int/float/bool) so subclasses pass through."
+        },
+        {
+          "module": "both",
+          "severity": "high",
+          "category": "correctness",
+          "line": 144,
+          "description": "__await__ returns inconsistent kinds of value across the wrapper set: containers (dict/str/list) and primitives (int/float/bool) return a COPY, while _AsyncScalar and the result classes (via _identity_await) return the LIVE object. This contradicts the module docstring's claim that awaiting yields 'the SAME real result', and produces asymmetric aliasing: a sync caller mutating the top-level of a dict sees the change, but the async (awaited) copy does not; conversely a sync caller of a result class and the awaited value are the SAME object. Dict/list copies are also only SHALLOW \u2014 nested objects are shared, so post-await mutation of a nested value leaks into the 'copied' result.",
+          "evidence": "exa:144-147 (_AsyncDict.__await__ -> `return dict(self)`), 164-167 (_AsyncList -> `list(self)`); exa:246-249 (_AsyncScalar.__await__ -> `return self._v` = live object); exa:133-137 (_identity_await -> `return self`); exa:5984-5986 (result classes get _identity_await). Verified: `await _AsyncDict` -> new dict not the wrapper, but `aw['nested'] is orig['nested']` is True (shallow); `await _AsyncScalar(obj) is obj` -> True; `await SearchResults is self` -> True. Docstring exa:108-110: 'value = await fn(...) -> the SAME real result'.",
+          "suggestion": "Pick one semantics and state it: either always return the live instance (so `await x is x` uniformly True and docstring holds) or always return a deep-ish copy, and document that nested objects are shared. Do not mix copy and live semantics for 'the same' await operation."
+        },
+        {
+          "module": "both",
+          "severity": "low",
+          "category": "correctness",
+          "line": 196,
+          "description": "_AsyncBool subclasses int (not bool) and defines __new__ via int.__new__(cls, bool(v)), so an _AsyncBool is NOT an instance of bool. Combined with the dead __await__ guard, re-wrapping an _AsyncBool falls into the `isinstance(value, int)` branch of _wrap_result and demotes it to _AsyncInt \u2014 awaiting then yields 1/0 (int) instead of True/False, and __str__/__repr__ lose their bool override. Currently latent because no public function returns a bare bool (all public bool-returning logic is folded into dict results), but it is a real demotion the moment a public func returns a bool.",
+          "evidence": "exa:196-213 (class _AsyncBool(int): def __new__(cls,v): return int.__new__(cls, bool(v))); exa:224-227 (bool check then int check in _wrap_result). Verified: `type(exa._AsyncBool(True)).__name__=='_AsyncBool'`; `isinstance(exa._AsyncBool(True), bool)` -> False; `type(exa._wrap_result(exa._AsyncBool(True))).__name__` -> '_AsyncInt'; `await` of the re-wrap -> 1 (int) instead of True.",
+          "suggestion": "Make _AsyncBool subclass bool, or add an explicit `isinstance(value, _AsyncBool)` (and the other wrapper types) short-circuit at the top of _wrap_result so re-wrapping a wrapper is a no-op rather than a demotion."
+        },
+        {
+          "module": "both",
+          "severity": "low",
+          "category": "maintainability",
+          "line": 329,
+          "description": "The guard `if getattr(_obj, \"__name__\", \"\") == \"_async_aware\": continue` in _apply_async_to is dead code. _make_async builds the twin with @functools.wraps(fn), which copies the ORIGINAL function's __name__ onto the wrapper, so no wrapped function ever has __name__ == '_async_aware' (they keep the public name, e.g. 'search'). The guard can never match, so a second call to _apply_async_to on an already-wrapped globals dict would re-wrap each public function rather than skip it.",
+          "evidence": "exa:329-330 (brave:718-719): `if getattr(_obj, \"__name__\", \"\") == \"_async_aware\": continue`. Verified: `w = exa._make_async(lambda:1); w.__name__` -> '<lambda>' (the wrapped fn's original name), never '_async_aware'. Because _apply_async_to runs once at import there is no observable bug today, but the guard provides false assurance and would silently double-wrap on re-application.",
+          "suggestion": "Guard on a stable marker instead of __name__ (e.g. set a custom attribute like `fn.__wrapped_by__ = 'async_aware'` in _make_async and check it, or check `getattr(_obj, '__wrapped__', None) is not None`)."
+        },
+        {
+          "module": "both",
+          "severity": "medium",
+          "category": "correctness",
+          "line": 334,
+          "description": "_apply_async_to(globals()) wraps EVERY public module name that is a types.FunctionType, with no filter for functions that were merely IMPORTED rather than defined in the module. `parsedate_to_datetime` (imported from email.utils at module level) is therefore wrapped into an async-aware twin that is exposed as a public module attribute AND is what the internal _retry_after_seconds call site uses. Its datetime return is boxed in _AsyncScalar, so internal code receives a proxied datetime instead of a real one; `.timestamp()` happens to work (proxied via __getattr__) but other datetime ops raise TypeError, making _retry_after_seconds depend on the proxy's partial surface rather than the real type.",
+          "evidence": "exa:24 `from email.utils import parsedate_to_datetime`; exa:61 internal call `dt = parsedate_to_datetime(raw)`; exa:334 `module_dict[_name] = _make_async(_obj)` (brave:21, brave:58, brave:723). Verified: `exa.parsedate_to_datetime` is wrapped; calling it returns `type == _AsyncScalar` (repr datetime(...)); `(wrapped_date) - timedelta(seconds=1)` -> TypeError (only __getattr__ methods like .timestamp() are proxied).",
+          "suggestion": "Restrict wrapping to functions defined in this module (e.g. `if getattr(_obj, '__module__', None) != <this module>: continue`), and import stdlib helpers with a leading-underscore alias so they stay private. Same fix prevents any future `from X import Y` from being silently re-exported as a wrapped public callable."
+        },
+        {
+          "module": "both",
+          "severity": "medium",
+          "category": "edge-case",
+          "line": 324,
+          "description": "None pass-through is a contract drift. A public function that returns None is boxed in _AsyncScalar(None); the sync caller then receives the proxy, not None, so `result is None` is False (only `not result` is truthy). _AsyncScalar also defers __iter__/__getitem__/__len__/__contains__ straight to None, so those raise TypeError/AttributeError rather than a clean None. Currently latent: no public function in either module returns a bare None (a targeted scan of all wrapped public funcs found none), so this is a latent edge case rather than an active bug \u2014 but it will silently break the moment a public fn adds a 'return None' and any caller tests `is None`.",
+          "evidence": "exa:234-235 / exa:238-261 (_wrap_result fallback `return _AsyncScalar(value)` 'incl. None'; _AsyncScalar.__iter__ -> iter(self._v), __len__ -> len(self._v)). Verified: `w=exa._wrap_result(None); type(w)=='_AsyncScalar'; w is None -> False; bool(w) -> False; iter(w) -> TypeError('NoneType' object is not iterable)`. Scan of all wrapped public functions in exa and brave found no top-level 'return None'.",
+          "suggestion": "Return None (and ideally other identity-sensitive singletons) untouched from _wrap_result, i.e. add `if value is None: return value` before the generic fallback, so `await fn()` and `fn()` both give exactly None and `is None` checks keep working."
+        }
+      ]
+    },
+    {
+      "lens": "API-KEY AUTH + SECRETS",
+      "summary": "The auth-key plumbing is shared nearly verbatim between the two modules (exa 407-488, brave 886-967). No credential is ever interpolated into logs, error messages, or returned strings: the key is only placed in the `x-api-key` / `X-Subscription-Token` header (exa 508, 2652, 2758, 2860; brave 982, 4609) and the 401/422/5xx error text interpolates only the response `detail`/`body`, the `path`, and query `params` \u2014 never the key or the header dict; the only `print` is exa 1283 (a category warning). So I report no leak finding. There are, however, three substantiated defects in the key-resolution path: (1) a process-lifetime `_API_KEY_CACHE` that is never invalidated, so a corrected/rotated key in the environment or a key file is not picked up in-process \u2014 which directly defeats the modules' own 401 remediation text and matters for the persistent IPython agent kernel exa explicitly targets; (2) key-store files (e.g. `~/.prime/agent/keys/exa.key`, `secrets.env`) are ALWAYS parsed by the hand-rolled `_read_key_file` (naive `.strip(\"'\\\"\")`, no inline-comment handling, `len>=12` bare-token heuristic) even when `python-dotenv` is installed, since dotenv is used only for the env-file list; (3) `os.environ.setdefault` mutates the process environment as a side effect, and in brave the two-name priority lets a stale `BRAVE_API_KEY` shadow a correct `BRAVE_SEARCH_API_KEY`.",
+      "findings": [
+        {
+          "module": "both",
+          "line": 475,
+          "severity": "high",
+          "category": "cache-invalidation",
+          "description": "_API_KEY_CACHE is written once per label and never invalidated (no .clear()/.pop()/del anywhere in either module). Once a key is resolved, all later calls in the same process return the cached value and never re-read the environment or key files. A user who rotates/fixes the key mid-process (re-export EXA_API_KEY/BRAVE_API_KEY, or edit the key file) gets the SAME stale key on every subsequent call, so 401s persist and the documented recovery ('export a fresh EXA_API_KEY', 're-export', 're-run /login') silently does not work in-process. This is biting for the intended runtime: exa's docstring (lines 112-113) targets a long-lived IPython agent kernel that reuses the module across many await skill.search(...) calls.",
+          "evidence": "exa/src/exa/__init__.py:475-487  if label in _API_KEY_CACHE: return _API_KEY_CACHE[label]; key = _seek_api_key(_API_KEY_NAMES); ... _API_KEY_CACHE[label] = key; return key   ||  brave/src/brave/__init__.py:954-966 (identical). 401 guidance that becomes dead-on-arrival: exa:528 'Your EXA_API_KEY is invalid, expired, or revoked. Re-run /login (choose exa) or export a fresh EXA_API_KEY.' There is no _API_KEY_CACHE.clear()/pop()/del anywhere (grep confirmed only init at exa:409 / brave:888 and the read/write above).",
+          "suggestion": "Make the cache a negative-key-safe memo that re-reads when the underlying source changes, or drop the module-level cache and resolve per call (env lookup is cheap). If keeping the cache, expose an invalidate() and document that re-exporting requires a process restart."
+        },
+        {
+          "module": "both",
+          "line": 469,
+          "severity": "medium",
+          "category": "dotenv-parsing",
+          "description": "Key-store files (~/.prime/agent/keys/exa.key, exa_search_api_key.key, secrets.env, ~/.prime/keys/exa.env, ~/.exa.env \u2014 and the PRIME_DOTENV/env files when the dotenv branch misses) are ALWAYS parsed by the naive _read_key_file, never by python-dotenv: the dotenv branch (exa:430-438 / brave:908-917) iterates only the short `files` env-file list, and even when dotenv is installed it is not applied to the key-store files. Consequences for those files: (a) inline comments are not stripped \u2014 `EXA_API_KEY=abc # note` yields `abc # note`; (b) `.strip(\"'\\\"\")` mangles unbalanced quotes ('abc -> abc, \"abc -> abc, and strips ALL leading/trailing quote chars); (c) the `len>=12 and \"/\" not in line` bare-token heuristic treats the first preamble/metadata line that has no '=' and no '/' as the key, a false positive when a key-store file has a header line (>=12 chars) above the real token. python-dotenv is not a declared dependency (both pyproject.toml list only httpx), so the naive parser is the live path in most deployments.",
+          "evidence": "exa/src/exa/__init__.py:453-471 / brave:932-950  _read_key_file: ... if '=' in line: k,_,v = line.partition('='); if k.strip() in names and v.strip(): return v.strip().strip(\"'\\\"\")  elif len(line) >= 12 and '/' not in line and line not in names: return line.strip().strip(\"'\\\"\")   ||  dotenv used only for env files: exa:430-438 `for p in files: ... return d[n].strip()` (no quote-strip), then exa:447-450 falls through to `for p in key_files: v=_read_key_file(p,names)` (key_files = 5 key-store paths + files). Same shape at brave:908-930.",
+          "suggestion": "Route key-store files through the same parser used for env files (or always use python-dotenv when available, declaring it a dependency) so quoting/comment handling is consistent; gate the bare-token heuristic on the whole file being a single token (e.g. no other K=V lines present) to avoid preamble false positives."
+        },
+        {
+          "module": "both",
+          "line": 485,
+          "severity": "medium",
+          "category": "env-side-effect",
+          "description": "_get_api_key mutates the process environment as a side effect of reading a key: for every key name it runs os.environ.setdefault(n, key), writing the found key into the env even when the user only configured it via a key file or via the *other* name. In brave, _API_KEY_NAMES=['BRAVE_API_KEY','BRAVE_SEARCH_API_KEY'] and _seek_api_key checks them in order, so a stale BRAVE_API_KEY in the env shadows a correct BRAVE_SEARCH_API_KEY (first name wins), and setdefault then also pins BRAVE_SEARCH_API_KEY to that stale value; combined with the never-invalidated cache, unsetting one variable later does not help. Exa (single name) has the same env-mutation smell in a milder form. This is a state-mutation surprise for a library whose only job is to search.",
+          "evidence": "exa/src/exa/__init__.py:485-486 `for n in _API_KEY_NAMES: os.environ.setdefault(n, key)` (names=['EXA_API_KEY'])  ||  brave/src/brave/__init__.py:964-965 `for n in _API_KEY_NAMES: os.environ.setdefault(n, key)` with 886 `_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']` and 893-896 env lookup that returns the first matching name.",
+          "suggestion": "Do not write back to os.environ from a library (remove the setdefault loop); if a downstream tool genuinely needs the var, document that. For brave, prefer the env var the user actually set over an older sibling, or at least don't cross-populate the two names."
+        }
+      ]
+    },
+    {
+      "lens": "HTTP layer, retry, rate-limit, timeouts",
+      "summary": "Both clients share a near-identical clean-engine skeleton (process-lifetime httpx.Client with Limits(max_connections=16), a lazy module-global _pool, an identical _retry_after_seconds that correctly honors Retry-After in both seconds and date form and clamps to [0.05, 8.0], and an _fanout that submits all jobs first then collects). The Retry-After handling is correct in both. The substantive issues are asymmetric between the two modules.\n\nBrave's _request is the more defensive of the two: it explicitly catches httpx.TimeoutException/ConnectError/ConnectTimeout/ReadTimeout, retries 429/5xx and even \"200-but-non-JSON\", and fast-fails on auth/validation. Its one real defect is the fallback path: _run_fallback returns None when the fallback endpoint also fails, and the sole caller (_search_full, local mode) hands that None straight to _query_diag, which does data.get(...) -> AttributeError.\n\nExa's _request is the weaker one: it only classifies HTTP status codes and does NOT catch any transport-level httpx exception, so a ConnectError/ReadTimeout/PoolTimeout (very common on a 45s timeout for heavy deep-reasoning/answer/search calls) raises a raw httpx exception with no retry \u2014 directly contradicting its docstring claim that \"transient failures are retried.\" It also re-sends non-idempotent stateful POST/PATCH requests on 429/5xx, risking duplicate agent runs/monitors/websets (double billing), and its success-path resp.json() is unguarded. Both modules also share an unlocked check-then-set lazy init for the shared Client and thread pool, which contradicts the docstring \"thread-safe\" claim under concurrent first use.\n\nDesign note (not reported as a bug): Brave's HTTP-transient backoff is linear (1.0*attempt), not exponential, whereas Exa's no-header fallback is exponential (2**attempt*0.5); both are clamped to 8.0s by _retry_after_seconds.",
+      "findings": [
+        {
+          "module": "brave",
+          "severity": "high",
+          "category": "correctness",
+          "line": 1716,
+          "description": "Fallback path can crash with AttributeError. _run_fallback (lines 1059-1075) returns None in several cases (fallback GET raises, alt.status_code != 200 at lines 1068-1069, or alt.json() fails at 1071-1073). _request then does `return _run_fallback(...)` at line 1044, so _request returns None. The only caller that passes fallback= is _search_full at line 2010 (`data = _request(path, params, timeout, fallback=fallback, ...)`), which immediately calls `diag = _query_diag(data)` at line 2011 with data=None; _query_diag line 1716 does `q = data.get(\"query\") or {}` -> AttributeError: 'NoneType' object has no attribute 'get'.",
+          "evidence": "line 1044: `return _run_fallback(fallback, params, headers, timeout, path, resp.status_code)`; line 1068-1069: `if alt.status_code != 200:\\n        return None`; line 2010: `data = _request(path, params, timeout, fallback=fallback, headers=loc_headers)`; line 2011: `diag = _query_diag(data)`; line 1716: `q = data.get(\"query\") or {}`",
+          "suggestion": "In _search_full, guard the fallback return: `data = _request(...)` then `if data is None: raise BraveError('local search failed and web fallback also failed')` before calling _query_diag; or make _request re-raise the original transient error instead of returning None when the fallback yields nothing."
+        },
+        {
+          "module": "exa",
+          "severity": "medium",
+          "category": "reliability",
+          "line": 507,
+          "description": "exa._request does not catch any transport-level httpx exception. The request call at line 507 is not wrapped in try/except, so httpx.ConnectError/ConnectTimeout/ReadTimeout/PoolTimeout propagate out of _request as raw httpx exceptions with NO retry. This contradicts the docstring (lines 502-500) that 'Transient failures (429 rate-limit, 5xx) are retried up to _retries times with short exponential backoff so a single throttled call does not kill a fan-out.' Only 4xx/5xx status codes (line 518) are retried; a slow response (ReadTimeout at the 45s/60s/90s timeouts used by search/answer/agent) or a connection blip is not retried and surfaces as an unhandled exception to every public caller (search, run, answer, agent, ...).",
+          "evidence": "lines 506-508: `for attempt in range(_retries + 1):\\n        resp = _http().request(method, url, params=params, json=json_body,\\n                               headers={\"x-api-key\": api_key}, timeout=timeout)` (no surrounding try/except); contrast brave lines 991-1008 which wrap the request in `try: ... except (httpx.TimeoutException, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)`. ",
+          "suggestion": "Wrap the _http().request(...) call in try/except for (httpx.TimeoutException, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) and treat it like a transient failure: sleep(_retry_after_seconds(None, 2**attempt*0.5)) and continue within the attempt loop, raising a clean ExaError after exhausting attempts."
+        },
+        {
+          "module": "exa",
+          "severity": "medium",
+          "category": "correctness",
+          "line": 518,
+          "description": "Non-idempotent stateful requests are blindly re-sent on 429/5xx. _request retries (lines 518-520) apply to every method, including state-creating POST/PATCH/DELETE calls: POST /agent/runs (line 2404, charges agent compute), POST /monitors (line 2998), POST /v0/websets (line 3384), PATCH /monitors/{id} (3019/3216/3917/4014/4018), POST /v0/imports (3950), etc. If a 5xx is returned after the server has already created the resource (or a POST is retried after a 429), the resource can be created twice / billed twice. Even the read endpoints POST /search, /answer, /contents bill per call, so a retried 5xx doubles cost.",
+          "evidence": "lines 518-520: `if status in (429, 500, 502, 503, 504) and attempt < _retries:\\n            time.sleep(_retry_after_seconds(resp, 2 ** attempt * 0.5))\\n            continue` (applies regardless of method); line 2404: `created = _request(\"POST\", \"/agent/runs\", key, json_body=body, timeout=min(timeout, 30))`",
+          "suggestion": "Only auto-retry idempotent requests, or make _request accept an idempotency signal; for stateful POST/PATCH/DELETE, retry 5xx only when the response indicates the request was not processed, and/or send a client-generated idempotency key on mutating endpoints."
+        },
+        {
+          "module": "both",
+          "severity": "low",
+          "category": "thread-safety",
+          "line": 34,
+          "description": "Lazy init of the shared process-lifetime httpx.Client and the shared ThreadPoolExecutor is an unlocked check-then-set on a module global, despite the docstring claiming 'thread-safe for request()'. Under concurrent first use (brave batch()/mode='all' _fanout and exa fan-out all submit thread-pool thunks that call _request->_http() at once), two threads can both observe _CLIENT is None and each construct a Client (leaking one, doubling the 16-connection pool briefly); the same pattern applies to _WORKERS, leaking a ThreadPoolExecutor with live threads.",
+          "evidence": "exa lines 31-40 / brave lines 27-36: `global _CLIENT\\n    if _CLIENT is None:\\n        _CLIENT = httpx.Client(limits=_ENGINE_LIMITS, ...)`; exa lines 43-47 / brave lines 39-43: `global _WORKERS\\n    if _WORKERS is None:\\n        _WORKERS = ThreadPoolExecutor(max_workers=n, ...)`. No lock guards either block.",
+          "suggestion": "Guard lazy init with a module-level threading.Lock (create-once under the lock, then re-check the global), or eagerly create _CLIENT/_WORKERS at import time so the check-then-set race disappears."
+        },
+        {
+          "module": "exa",
+          "severity": "low",
+          "category": "robustness",
+          "line": 510,
+          "description": "Success-path resp.json() is unguarded. On a 2xx response exa does `return resp.json()` with no try/except, so a 2xx with an empty or non-JSON body raises a raw JSONDecodeError out of _request to every caller. Note the failure path right below (lines 512-515) DOES guard resp.json(), so only the success path is exposed; brave explicitly handles the analogous '200-but-unparseable' case as a transient retry (brave lines 1017-1025), exa does not.",
+          "evidence": "exa lines 509-510: `if resp.status_code < 400:\\n            return resp.json()` (unguarded); versus lines 512-515: `try:\\n            detail = resp.json()\\n        except Exception:\\n            detail = resp.text[:500]` (guarded)",
+          "suggestion": "Wrap the success-path resp.json() in try/except and, on failure, treat it as a transient server-side oddity (retry within the attempt loop) before surfacing a clean ExaError."
+        }
+      ]
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "summary": "The test suite (tests/test_search_contracts.py, 6 tests) covers exactly four documented contracts: brave.paged pagination, brave.search compact-vs-full views, exa.fetch failed-URL envelope, and exa.webset_items satisfied='yes'. Everything else in the documented public surface is untested. I reproduced each priority contract offline and found they currently all hold \u2014 with one real defect: brave.research() returns its AI-summary deep-link under the key 'summary_dead_link' while its own Returns docstring promises 'summary_deep_link', so any doc-following consumer doing result['summary_deep_link'] hits a KeyError. This is the one substantiated bug; the rest are genuine coverage gaps on documented contracts with real branching logic (exa search/run cost+grounding, exa answer/agent/agent_structured cost+grounding, exa.fetch string-vs-list, brave merge/research, brave probe/summarize_page, brave rich verticals, brave place_search). Severity: the research key mismatch is high (documented key missing \u2192 crash at access). The priority-listed contracts are medium (meaningful documented behavior that could regress silently). A large tail of documented helpers has zero coverage at all (low). No data-loss or security issues found.",
+      "findings": [
+        {
+          "module": "brave",
+          "line": 2345,
+          "severity": "high",
+          "category": "contract-drift / bug",
+          "description": "brave.research() returns the AI-summary deep-link under key 'summary_dead_link', but its public Returns contract documents 'summary_deep_link'. A caller following the docs and reading result['summary_deep_link'] gets KeyError; the value is actually present under a typo'd key.",
+          "evidence": "Docstring (src/brave/__init__.py:2263-2266) promises: Returns: {\"query\", \"queries\", \"mode\", \"results\":[dedup items], \"n\", \"sources\":[hosts], \"infobox\", \"faq\", \"videos\", \"discussions\", \"summary_deep_link\", \"per_search\", \"exhausted\", \"render\": str, \"duplicates\": int}. Code (src/brave/__init__.py:2345) emits: \"summary_dead_link\": summary_dl. Grep confirms 'summary_deep_link' appears only in the docstring and 'summary_dead_link' only in the code. Reproduced offline (patch brave._search_full): research('topic') returned a dict whose keys include 'summary_dead_link' and NOT 'summary_deep_link'. No test exercises research() at all, so the mismatch is undetected.",
+          "suggestion": "Offline test: patch brave._search_full to return a web page that carries summarizer={deep_link:'LINK', ...}; call brave.research('topic', summary=True); assert the returned dict exposes the deep link under the documented key 'summary_deep_link' (and that 'render' is a non-empty str, 'n' == deduped count, 'exhausted' reflects provider stop). Failing this test now confirms the bug; also fix line 2345 to emit 'summary_deep_link'."
+        },
+        {
+          "module": "exa",
+          "line": 1415,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "exa.search / run / SearchResults.to_agent documented cost + grounding contracts have zero test coverage. No existing test calls exa.search or exa.run at all.",
+          "evidence": "usage.md:109-110 documents: \"to_meta(), total_cost(), and cost_breakdown() preserve reported usage; missing costs are unknown, not zero.\" search() docstring (src/exa/__init__.py:1478-1484) promises '.answer holds the synthesized content and .answer_grounding the per-field source citations'. run() docstring (src/exa/__init__.py:1638-1644): 'Pass output_schema ... appended below the list as --- synthesized answer ---'. Reproduced offline: exa.search with costDollars={total:0.012,search:{neural:.007,keyword:.005}} \u2192 total_cost()==0.012, cost_breakdown()=={'total':.012,'modes':{neural,keyword}}, to_agent() includes 'cost'; search(output_schema=...) \u2192 .answer + .answer_grounding surfaced and to_agent() includes 'grounding'; exa.run('q',with_text=True) rendered '1. T1' list plus '--- synthesized answer ---\\nSYNTH ANSWER'. None of this is asserted anywhere in tests/.",
+          "suggestion": "Offline test: patch exa._get_api_key and exa._request. (a) exa.search: assert isinstance SearchResults, .total_cost()/.cost_breakdown()/.search_time_ms match costDollars/searchTime, to_agent() carries cost+request_id, and with output_schema the .answer/.answer_grounding propagate into to_agent()['grounding']. (b) exa.run: assert the numbered list and, when the response has output.content, the '--- synthesized answer ---' block is appended. (c) edge: costDollars absent \u2192 total_cost() is None (not 0) and to_agent() omits 'cost' (usage.md: 'missing costs are unknown, not zero')."
+        },
+        {
+          "module": "exa",
+          "line": 1895,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "exa.answer / agent / agent_structured documented cost + grounding + structured-guard contracts are untested. No existing test touches any of the three, nor AgentRun/Answer.",
+          "evidence": "jobs.md:20-23: \"agent_structured(query, schema) checks that structured output exists; it is not a local JSON Schema validator. run.grounding and run.citations link fields to sources. ... run.cost, usage, and connects report available spend\". answer() docstring (src/exa/__init__.py:1930-1931) returns 'an Answer with .answer (str or dict) and .citations list'. AgentRun.cost (line 1992-1994) = cost_dollars.total; .citations (1978) dedups grounding; .connects (1997) maps dataSources. Reproduced offline: exa.answer \u2192 Answer(.answer,.sources,.cost_dollars); exa.agent (patch _request POST\u2192created, GET\u2192completed with grounding+usage+costDollars) \u2192 .cost==0.5, .connects=={'fiber':{calls:4,cost_usd:.3}}, .connect_cost_usd==.3, .citations/.sources deduped, .done True; exa.agent_structured raises ExaError when AgentRun.structured is None. Uncovered by any test.",
+          "suggestion": "Offline test: patch exa._get_api_key and exa._request. (a) answer(): assert Answer.answer, .sources (url-only list), .cost_dollars, and to_dict() key set. (b) agent(): simulate POST creating a queued run then GET polling to a completed run carrying output.text/structured/grounding + usage.dataSources + costDollars; assert .text/.structured/.cost/.citations/.connects/.done and that to_markdown() contains the cost. (c) agent_structured(): with agent() patched to return a run whose structured is None, assert ExaError is raised; with structured set, assert the same run object is returned. (d) agent() raise_on_failed: a completed-but-failed status raises; timeout (done None) raises ExaError with the run id."
+        },
+        {
+          "module": "exa",
+          "line": 1679,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "exa.fetch string-vs-list return-shape contract is untested. Only the failed-URL envelope is covered; the documented list-vs-formatted-string switch (including the 'one-element list still yields a string' rule and the rich-option override) has no test.",
+          "evidence": "usage.md:64-65: \"Without it, fetch returns a list or a formatted string for a single plain-text result\u2014even when the input was a one-element list.\" Branch lives at src/exa/__init__.py:1820-1835 (len(results)==1 and mode=='text' and no highlights/summary/extras/max_age_hours \u2192 return rendered string; else list). Reproduced offline: fetch(urls='one url') \u2192 _AsyncStr '--- T ---\\nBODY'; fetch(urls=['one url']) \u2192 _AsyncStr (list input still a string, per doc); fetch(urls=[two urls]) \u2192 _AsyncList len 2; fetch(urls='one', with_highlights=True) \u2192 _AsyncList (rich option forces list). None of these shapes is asserted in tests/ (the existing fetch test only checks the failed-URL envelope).",
+          "suggestion": "Offline test: patch exa._get_api_key and exa._request. Assert: (a) single URL string, no rich opts, plain text \u2192 returns a str starting '--- <title> ---' with body truncated to max_characters; (b) single-URL one-element list, no rich opts \u2192 also a str (the doc's explicit edge); (c) two URLs \u2192 a list of per-URL dicts; (d) with_highlights=True or with_summary=True forces a list even for one URL; (e) a failed crawl with no text still surfaces the structured error rather than an empty string (branch at line 1827 'if t or r0.get(\"error\") is None')."
+        },
+        {
+          "module": "brave",
+          "line": 2197,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "brave.merge documented 'deduplicates results by URL' + per-source _query tagging is untested.",
+          "evidence": "api.md:70: \"merge(*searches) deduplicates results by URL.\" Docstring (src/brave/__init__.py:2197-2209): 'a small research helper ... combine their results into a single URL-deduped ranked list ... Returns a flat list of merged dicts (each tagged with its original _query)'. Logic at lines 2212-2223 dedups on url/page_url and setdefault('_query', ...). Reproduced offline: merge(a,b) with a duplicate https://x.org/1 across both dicts \u2192 3 items, duplicate dropped, _query tags ['QA','QA',None] (dict-form query uses .original, string-form query yields None tag). No test exercises merge().",
+          "suggestion": "Offline test: build two search dicts (one with query as a diagnostics dict {'original':...}, one with a plain string) sharing a duplicate url; call brave.merge(a,b) and assert (a) the duplicate url appears once, (b) order is first-occurrence-wins, (c) each item is tagged _query from its source, (d) dedupe=False preserves the duplicate, (e) reads from either 'results' or 'web' key."
+        },
+        {
+          "module": "brave",
+          "line": 3513,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "brave.probe / summarize_page success-semantics contract is untested. No existing test touches either.",
+          "evidence": "api.md:76-79: \"probe(url, max_chars=..., timeout=...) fetches and cleans HTTP content. Check status == 200 and nonempty text; there is no universal ok field. ... summarize_page(url, ...) chooses a lead and weighted sentences locally.\" probe() (src/brave/__init__.py:3513) raises BraveError on any non-200 (line 3552-3554) and returns {url,status,title,text,chars,truncated,final_url}. summarize_page (line 5302) propagates probe's exception on non-200 and returns {summary,points,readable,...}. Reproduced offline (patch brave._http): probe on a 200 text/html page \u2192 status==200, title extracted, <p> text cleaned, truncated False; on a 404 \u2192 BraveError category 'http'; summarize_page on the 404 propagates BraveError rather than returning a digest. Untested.",
+          "suggestion": "Offline test: patch brave._http (return a fake client whose .get yields a fake response). Assert: (a) probe 200 text/html \u2192 status 200, nonempty text with tags/entities stripped, title parsed from <title>, truncated True + trailing '\u2026' when text exceeds max_chars; (b) probe non-200 \u2192 BraveError with category 'http'; (c) probe network failure (httpx exception) \u2192 BraveError category 'network'; (d) summarize_page on a rich page \u2192 .summary is a lead paragraph, .points is a list \u2264 max_points, .readable contains title+url+key points; (e) summarize_page on a non-200 \u2192 does not return a points dict (surfaces the fetch failure), matching api.md's 'status==200' success gate."
+        },
+        {
+          "module": "brave",
+          "line": 4064,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "brave.rich verticals (hint-then-fetch + per-vertical normalization) are untested.",
+          "evidence": "verticals.md:68-71: \"rich(query) requests a callback hint from web search and then fetches its payload when present; fetch=False requests only the hint.\" Docstring (src/brave/__init__.py:4064-4093) returns {type:'rich',query,hint,callback_key,vertical,results:[{subtype,provider,data}],render,raw}. rich() calls _search_full(enable_rich_callback=True), reads rich.hint.callback_key, then _rich_fetch(cb) and normalizes via _rich_result/_rich_weather/etc. Reproduced offline: patch _search_full to return rich.hint.callback_key='cb1'/vertical='weather' and patch _rich_fetch to a weather payload \u2192 rich('weather') returns callback_key 'cb1', vertical 'weather', results[0].subtype 'weather', provider dict, data.location.name 'NYC', data.current.temp, data.daily[0].temp_day, and a '[Weather in NYC, US]' render. Also untested: fetch=False short-circuit and the no-callback-key path. No test covers rich() or any vertical normalizer.",
+          "suggestion": "Offline test: patch brave._search_full (return a payload with rich.hint.callback_key + vertical) and brave._rich_fetch (return a vertical payload). Assert: (a) with callback_key present + fetch=True \u2192 results[0] is normalized {subtype,provider,data} for the vertical (use weather and, if cheap, one of stocks/crypto/currency to hit _rich_*), callback_key and vertical echo through, 'render' present; (b) fetch=False \u2192 no _rich_fetch call, results==[] but callback_key still returned; (c) no callback_key \u2192 results==[] without raising; (d) an unknown subtype falls through to the passthrough guard (data = raw)."
+        },
+        {
+          "module": "brave",
+          "line": 4450,
+          "severity": "medium",
+          "category": "coverage-gap",
+          "description": "brave.place_search documented resolved-anchor + coordinate-intent + validation guards are untested.",
+          "evidence": "verticals.md:53-54: \"place_search(query, location=...) uses a place-name anchor; latitude, longitude, and radius allow coordinate intent. Check resolved before treating results as local.\" Docstring (src/brave/__init__.py:4484-4489) returns {query, results, cities/countries/regions/neighborhoods, addresses/streets, mixed, resolved:{name,country,coordinates}, n, count, render}. Guards at lines 4491-4499 raise ValueError when neither coords nor location given, when only one of lat/lon given, or when count not 1..100. Reproduced offline (patch _get_api_key/_request): place_search('coffee', location='san francisco') \u2192 resolved{name,country,coordinates} populated, results normalized via _location_item, all geo/address buckets present, n correct. Note: result latitude/longitude come from the item's 'coordinates' array, not top-level lat/lon keys. No test exercises place_search or its ValueError guards.",
+          "suggestion": "Offline test: patch brave._get_api_key and brave._request (return a place payload with results[], location{name,country,coordinates}, and the geo buckets). Assert: (a) 'resolved' reflects the API location anchor; (b) results are normalized (title/address/phone/rating) and n==len(results); (c) cities/addresses buckets normalize; (d) render contains the '[Places]' and resolved header. Also assert the three ValueError guards: place_search() with no anchor, place_search(lat=.., longitude=None), and place_search(location='x', count=0) each raise ValueError."
+        },
+        {
+          "module": "both",
+          "line": 0,
+          "severity": "low",
+          "category": "coverage-gap",
+          "description": "Large tail of documented public helpers have NO test coverage at all. Beyond the four tested contracts, the documented surface in the SKILL.md tables + references is essentially untested.",
+          "evidence": "Documented but zero-coverage (verified present in the modules and referenced by docs): exa \u2014 brief, find_similar/similar_to, answer variants, stream_answer/stream_search/agent_trace, explain, magic, entity_search/top_terms/entity_* helpers, deep_research/merge_searches/diff_results/news_roundup/company_dossier, the webset_*/monitor_*/import_*/webhook_*/event_* families, github_repo/code_search/hf_models etc. brave \u2014 run, batch, research, software, near/locations/forums/headlines/clips/pictures/recipes/products/movies/structured/infobox/thumbnails/drinks/domain/find_files, news_cluster/news_breaking/news_beams/news_live, open_now, crawl, pois/poi_descriptions/place_detail, all rich verticals (weather/stock_quote/crypto/definition/currency_x/convert_values/unix_time/package), the developer family (docs/code_result/qna/github_repos/github_issues/error_solution/stack_trace/cve_lookup/dep_signal/...), and the stub helpers related/trending_topics/trending_libs/docker_aliases (api.md:97-98 documents they 'return limitation notes rather than discovery data' \u2014 a documented behavior with no assertion).",
+          "suggestion": "Priority order for adding offline coverage: (1) the medium findings above; (2) brave.run (readable rendering, SKILL.md's default entry) and brave.batch (documented 'fans out queries and reports individual payloads/errors', api.md:69 \u2014 per-query error isolation is a real, untested behavior); (3) the documented stub helpers (related/trending_topics/trending_libs/docker_aliases) asserting they return limitation-note strings, not discovery data; (4) exa entity/roster helpers and deep_research/merge_searches dedupe behavior. Each should monkeypatch exa._request or brave._search_full and assert the documented return-shape keys."
+        }
+      ]
+    },
+    {
+      "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+      "summary": "The two modules share large, near-identical plumbing copied verbatim or with only trivial renames. Verified by line-range diffs: (1) a ~200-line dual sync/async wrapper set (exa 133-334, brave 522-723) that is BYTE-IDENTICAL, including the module-tail `_apply_async_to(globals())` hook (exa:5988, brave:7213); (2) a ~80-line API-key lookup trio `_seek_api_key`/`_read_key_file`/`_get_api_key` (exa 411-488, brave 890-967) that is BYTE-IDENTICAL (only the `_API_KEY_NAMES`/`_API_LABEL` constants differ, which is the intended parameterization); (3) the HTTP-engine core `_http/_pool/_retry_after_seconds/_fanout` plus the module globals `_ENGINE_LIMITS/_CLIENT/_WORKERS` (exa 26-79, brave 23-80) that differ only by trivial renames (`follow_redirects=True/False`, `thread_name_prefix=\"exa\"/\"brave\"`, docstrings). These three are strong candidates for lifting into an internal `_common` module; the only intended differences are the redirect flag, the worker-name prefix, and the key-name/label constants, all of which would need to be parameterized. By contrast, the domain/url helpers are DIVERGENT (exa `_domain_of` is a registrable-domain label-slicer; brave `_url_host` is a hostname+www-strip) and should NOT be merged. Also note `_request` is NOT near-identical (exa POST + x-api-key + ExaError taxonomy; brave GET + X-Subscription-Token + BraveError taxonomy + fallback endpoints) and shares only the engine primitives, so a `_common` lift should stop at the engine. exa additionally has `_poll_until` (82-100) with no brave counterpart. Overall: high duplication ratio in the shared plumbing; a `_common` module would remove roughly 280+ lines of copy-paste and eliminate the drift risk that a fix in one copy never reaches the other.",
+      "findings": [
+        {
+          "module": "both",
+          "severity": "medium",
+          "category": "duplication",
+          "line": 133,
+          "description": "The entire dual sync/async wrapper set is byte-identical across the two modules: exa/__init__.py lines 133-334 vs brave/__init__.py lines 522-723. This includes _identity_await, _AsyncDict, _AsyncStr, _AsyncList, _AsyncInt, _AsyncFloat, _AsyncBool, _wrap_result, _AsyncScalar, _make_async, _apply_async_to (~200 lines). A `diff` of the two ranges is empty (IDENTICAL). Both also carry the identical module-tail activation call `_apply_async_to(globals())` (exa:5988, brave:7213). Because the copy is verbatim, any bug or fix applied to one copy will silently diverge from the other \u2014 the highest-value target for an internal _common module.",
+          "evidence": "exa 133-137: 'def _identity_await(self): ... if False: # pragma: no cover - makes this a generator (required by await)\\n        yield\\n    return self' ; exa 140-147 class _AsyncDict(dict) with __await__ returning dict(self) ; exa 216 'def _wrap_result(value):' ; exa 311 'def _apply_async_to(module_dict):' // brave 522-526 identical _identity_await ; brave 529 class _AsyncDict ; brave 605 _wrap_result ; brave 700 _apply_async_to. diff <(sed -n '133,334p' exa/...) <(sed -n '522,723p' brave/...) -> IDENTICAL.",
+          "suggestion": "Move the whole block into a shared internal module (e.g. search_skills/_common/awaitable.py) and have both exa and brave import it; keep each module's trailing `_apply_async_to(globals())` call pointing at the shared function."
+        },
+        {
+          "module": "both",
+          "severity": "medium",
+          "category": "duplication",
+          "line": 411,
+          "description": "The API-key lookup trio is byte-identical: exa/__init__.py lines 411-488 vs brave/__init__.py lines 890-967 (_seek_api_key, _read_key_file, _get_api_key). `diff` of each function range is empty (IDENTICAL). The only differences are the module constants that parameterize it: exa has `_API_KEY_NAMES = ['EXA_API_KEY']`, `_API_LABEL = \"exa\"` (lines 407-408); brave has `_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']`, `_API_LABEL = \"brave\"` (lines 886-887); both define `_API_KEY_CACHE = {}` (exa:409, brave:888). This is credential-resolution logic duplicated across both, so a behavior change or a path/env bug in one copy will not propagate to the other.",
+          "evidence": "Both define verbatim: 'def _seek_api_key(names=None):\\n    from pathlib import Path\\n    names = names or _API_KEY_NAMES\\n    for n in names:\\n        v = os.environ.get(n, \"\")\\n        if v and not v.startswith(\"${\"):\\n            return v ... stem = names[0].split(\"_\")[0].lower() ... return \"\"' ; 'def _read_key_file(path, names): ... if k.strip() in names and v.strip(): return v.strip().strip(\\\"'\\\"\\\\\\\"\\\")' ; 'def _get_api_key(): label = _API_LABEL ... _API_KEY_CACHE[label] = key; return key'. diff of 411-451/890-930, 453-471/932-950, 473-488/952-967 all -> IDENTICAL.",
+          "suggestion": "Lift the trio into _common with an injected (key_names, label) or a per-skill config object; each module passes its own _API_KEY_NAMES/_API_LABEL. Preserve the per-label _API_KEY_CACHE dict."
+        },
+        {
+          "module": "both",
+          "severity": "low",
+          "category": "duplication",
+          "line": 26,
+          "description": "The HTTP-engine core is duplicated with only trivial renames: module globals _ENGINE_LIMITS/_CLIENT/_WORKERS plus _http, _pool, _retry_after_seconds, _fanout. exa 26-79 vs brave 23-80. Bodies are verbatim except: `_http` uses `follow_redirects=True` in exa vs `follow_redirects=False` in brave; `_pool` uses `thread_name_prefix=\"exa\"` vs `\"brave\"`; `_retry_after_seconds` and `_fanout` differ only in docstring text. Note the intended `follow_redirects` difference means a _common _http must be parameterized, not shared as-is. exa additionally defines `_poll_until` (82-100) which has no brave counterpart, so it is exa-specific. These are small, low-risk duplicates.",
+          "evidence": "_http: exa line 37 'follow_redirects=True' vs brave line 33 'follow_redirects=False' (rest of body identical). _pool: exa 46 'ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"exa\")' vs brave 42 'thread_name_prefix=\"brave\"'. _retry_after_seconds diff shows only an added docstring line in brave. _fanout diff shows only differing docstrings; the submit/collect loop (pool.submit / fut.result / try-except append) is identical.",
+          "suggestion": "Move _ENGINE_LIMITS/_CLIENT/_WORKERS/_http/_pool/_retry_after_seconds/_fanout into _common, making _http take a follow_redirects flag and _pool take a thread_name_prefix. Leave exa's _poll_until in exa (no counterpart in brave)."
+        },
+        {
+          "module": "both",
+          "severity": "low",
+          "category": "duplication",
+          "line": 709,
+          "description": "Domain/url helpers are CONCEPTUALLY overlapping but DIVERGENT, not near-identical \u2014 flagging so a refactor does NOT wrongly merge them. exa `_domain_of` (709-724) computes a registrable domain by stripping scheme/www and slicing the last two labels, and a `hostname` property (693-700) uses urllib.parse.urlparse(...).hostname. brave `_url_host` (114-122) also uses urlparse(...).hostname but lowercases and strips a leading 'www.', and brave `_host` (1081-1084) just reads meta_url.hostname. Same problem space (extract host from a URL), different algorithms and outputs (registrable-domain vs full hostname). The overlap is only the shared `urlparse().hostname` idiom.",
+          "evidence": "exa 716 'host = url.split(\"//\", 1)[-1].split(\"/\", 1)[0] ... return \".\".join(labels[-2:])' (registrable domain) ; exa 698 'urllib.parse.urlparse(u if \"://\" in u else \"https://\" + u).hostname' ; brave 119 'host = (urlparse(str(url)).hostname or \"\").lower()' ; brave 122 'return host[4:] if host.startswith(\"www.\") else host'. No shared function; only the urlparse.hostname idiom matches.",
+          "suggestion": "Do not fold these into a single shared helper without first unifying the contract (registrable-domain vs host-without-www). If desired, share only a small `urlparse hostname` primitive and keep each module's post-processing separate."
+        }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+      "module": "exa",
+      "line": 5522,
+      "severity": "medium",
+      "category": "duplicate-definition-drift",
+      "description": "deprecations is defined twice (line 5522 and line 5768) inside two pasted copies of the 'Round-18' block (headers at lines 5451 and 5697). LIVE definition is line 5768 (last def wins). The two bodies are NOT identical - they have already drifted: the shadowed copy at 5522 has the extra comment '# the model answer itself flags deprecation - record as a signal.' and names the date variable 'start' ('start = end - timedelta(days=max(1, days))' / 'start_published_date=start.strftime(\"%Y-%m-%d\")'), while the live copy at 5768 omits the comment and renames the variable 'st' ('st = end - timedelta(days=max(1, days))' / 'start_published_date=st.strftime(\"%Y-%m-%d\")'). Behavior is functionally equivalent today, but the divergence proves the two copies are maintained independently: an edit to the shadowed copy at 5522 would be silently inert. deprecations is in __all__ (public API).",
+      "evidence": "5522:def deprecations(query: str, *, days=30, timeout=90.0):\n...5553:        start = end - timedelta(days=max(1, days))\n...5556:                    start_published_date=start.strftime(\"%Y-%m-%d\"),\n5768:def deprecations(query: str, *, days=30, timeout=90.0):\n...5798:        st = end - timedelta(days=max(1, days))\n...5801:                    start_published_date=st.strftime(\"%Y-%m-%d\"),",
+      "suggestion": "Delete the entire first shadowed Round-18 block (lines ~5451-5696, which contains the shadowed pkg_releases/_dep_type/deprecations/snippet/code_lint_tips), keeping the live definitions at 5705/5753/5768/5826/5870. The first block's unique function api_reference (line 5625) must be preserved."
+    },
+    {
+      "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+      "module": "exa",
+      "line": 5459,
+      "severity": "low",
+      "category": "duplicate-definition",
+      "description": "pkg_releases is defined twice: line 5459 (shadowed, dead) and line 5705 (LIVE, last def wins). The two bodies are byte-identical (same source, sha256 f357589e09efd171f6302167df4d51c1cbb6d7c9bbc92fed18314d42f07c9991), so there is no behavioral difference - pure dead code (~46 lines). pkg_releases is a public name in __all__; callers always get the copy at 5705.",
+      "evidence": "5459:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):\n5705:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):",
+      "suggestion": "Remove the shadowed copy at line 5459 as part of deleting the duplicated Round-18 block."
+    },
+    {
+      "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+      "module": "exa",
+      "line": 5507,
+      "severity": "low",
+      "category": "duplicate-definition",
+      "description": "Private helper _dep_type is defined twice: line 5507 (shadowed, dead) and line 5753 (LIVE, last def wins). Bodies are byte-identical (sha256 379eae056a7ef43c2a3819366e26a9d6f454134c883abc493b4a45a90d307e12). Not in __all__ (private); the live copy at 5753 is the one called by the live deprecations at 5768. Pure dead code (~13 lines).",
+      "evidence": "5507:def _dep_type(blob):\n5753:def _dep_type(blob):",
+      "suggestion": "Remove the shadowed copy at line 5507."
+    },
+    {
+      "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+      "module": "exa",
+      "line": 5581,
+      "severity": "low",
+      "category": "duplicate-definition",
+      "description": "snippet is defined twice: line 5581 (shadowed, dead) and line 5826 (LIVE, last def wins). Bodies are byte-identical (sha256 82ba6e720f225f7ebec5ebbd8bf34f46313c9624a30f16f1ef930e3a416ef128). snippet is public (in __all__); callers always get the copy at 5826. Pure dead code (~42 lines).",
+      "evidence": "5581:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):\n5826:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):",
+      "suggestion": "Remove the shadowed copy at line 5581."
+    },
+    {
+      "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+      "module": "exa",
+      "line": 5672,
+      "severity": "low",
+      "category": "duplicate-definition",
+      "description": "code_lint_tips is defined twice: line 5672 (shadowed, dead) and line 5870 (LIVE, last def wins). Bodies are byte-identical (sha256 6b2f64fbdc160658afbe7f529943c3e35b4b8eba71c57cd9f817ce572e515e33). Public name in __all__; callers always get the copy at 5870. Pure dead code (~20 lines).",
+      "evidence": "5672:def code_lint_tips(query: str, *, timeout=90.0):\n5870:def code_lint_tips(query: str, *, timeout=90.0):",
+      "suggestion": "Remove the shadowed copy at line 5672."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "module": "exa",
+      "line": 34,
+      "severity": "low",
+      "category": "lazy-init-race",
+      "description": "Check-then-act lazy init of the process-lifetime httpx.Client on module global _CLIENT is unsynchronized. Two threads entering _http() concurrently can both observe _CLIENT is None and both construct httpx.Client; the loser's client is discarded, leaving a closed/abandoned client with idle connections (small resource leak). No crash or wrong results.",
+      "evidence": "exa/__init__.py:27 _CLIENT = None ; :31-40 def _http() -> \"httpx.Client\": \"\"\"Process-lifetime client. Keep-alive pool; thread-safe for request().\"\"\"\\n    global _CLIENT\\n    if _CLIENT is None:\\n        _CLIENT = httpx.Client(limits=_ENGINE_LIMITS, follow_redirects=True, headers={\"Accept\": \"application/json\"})\\n    return _CLIENT",
+      "suggestion": "Guard with a module-level threading.Lock (double-checked locking) or pre-create the client at import time; keep the returned object immutable afterwards."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "module": "exa",
+      "line": 45,
+      "severity": "low",
+      "category": "lazy-init-race",
+      "description": "Check-then-act lazy init of the process-lifetime ThreadPoolExecutor on module global _WORKERS is unsynchronized (same pattern as _CLIENT). A racy concurrent _pool() call leaks a second executor. Note: _fanout() (line 67) is DEAD CODE in exa \u2014 grep shows zero call sites outside its own definition, and no exa public function fans work out \u2014 so in exa this race is only reachable if a caller invokes the private _fanout/_pool from multiple threads; today it is effectively dormant.",
+      "evidence": "exa/__init__.py:28 _WORKERS = None ; :43-47 def _pool(n: int = 8) -> ThreadPoolExecutor:\\n    global _WORKERS\\n    if _WORKERS is None:\\n        _WORKERS = ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"exa\")\\n    return _WORKERS ; :67 def _fanout(jobs, *, concurrency: int = 8): ... :71 pool = _pool(max(8, int(concurrency or 8))) \u2014 and grep '_fanout(' in the exa file returns only line 67 (the def).",
+      "suggestion": "Guard with a module-level lock; or delete the unused _fanout/_pool/_WORKERS from exa (dead code) to remove the surface entirely."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "module": "exa",
+      "line": 475,
+      "severity": "low",
+      "category": "check-then-act-cache-race",
+      "description": "Module-level mutable dict _API_KEY_CACHE is read/written in _get_api_key() with an unsynchronized check-then-act: `if label in _API_KEY_CACHE: return ...` then `_API_KEY_CACHE[label] = key` after doing filesystem/env work. Under genuine multithreaded entry, several threads can miss the cache simultaneously, each run _seek_api_key() and each write the cache. Consequence is benign (identical value, atomic dict stores under the GIL, idempotent os.environ.setdefault), but it is a real data race on shared mutable state. In exa this path is only concurrent if an external caller threads the public functions, since exa's _fanout is dead code.",
+      "evidence": "exa/__init__.py:409 _API_KEY_CACHE = {} ; :473-488 def _get_api_key():\\n    label = _API_LABEL\\n    if label in _API_KEY_CACHE:\\n        return _API_KEY_CACHE[label]\\n    key = _seek_api_key(_API_KEY_NAMES)\\n    ...\\n    for n in _API_KEY_NAMES:\\n        os.environ.setdefault(n, key)\\n    _API_KEY_CACHE[label] = key\\n    return key",
+      "suggestion": "Protect the check-then-act with a lock (or accept the race and document it as benign); also note the cache is process-lifetime: a rotated key in os.environ is never re-read once cached."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "module": "brave",
+      "line": 41,
+      "severity": "low",
+      "category": "lazy-init-race",
+      "description": "Check-then-act lazy init of the process-lifetime ThreadPoolExecutor on module global _WORKERS, identical to exa \u2014 but UNLIKE exa it is live: _fanout() is called by real public entrypoints, so on the FIRST process-wide fanout call, N worker threads plus the main thread can all execute _pool() before any assignment lands. Losers' ThreadPoolExecutor instances leak (they were never used, so their worker threads exit at join/idle, but the object + file descriptors survive until GC). No wrong results: all callers use whichever executor they got.",
+      "evidence": "brave/__init__.py:25 _WORKERS = None ; :39-43 def _pool(n: int = 8) -> ThreadPoolExecutor:\\n    global _WORKERS\\n    if _WORKERS is None:\\n        _WORKERS = ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"brave\")\\n    return _WORKERS ; live call sites: :1982 _fanout([...web/news/video...], concurrency=3) inside search mode=\"all\"; :3142 _fanout(jobs, concurrency=2) in thumbnails(); :3632 _fanout([...probe...], concurrency=8); :5424 _fanout(jobs, concurrency=4) in mosaic(); :5898 _fanout([...], concurrency=concurrency) in batch().",
+      "suggestion": "Guard with a module-level lock, or eagerly create the pool at import / first main-thread call (e.g., in module __init__) so the init path is single-threaded."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "module": "brave",
+      "line": 954,
+      "severity": "medium",
+      "category": "shared-cache-race-under-real-fanout",
+      "description": "Module-level mutable dict _API_KEY_CACHE is checked and written in _get_api_key() with check-then-act, and in brave this IS reached concurrently by real worker threads: every _fanout thunk calls _request() -> _get_api_key(). On the first fanout call with a cold cache (no BRAVE_API_KEY pre-exported, key found via dotenv/key-file), all N worker threads (concurrency up to 8 in crawl, 4 in mosaic, 3 in mode=all) pass `if label in _API_KEY_CACHE` before any write, each performs the full _seek_api_key() filesystem walk in parallel, and each executes `_API_KEY_CACHE[label] = key` concurrently. Consequence is still benign in practice (deterministic identical value, GIL-atomic dict stores, idempotent setdefault) \u2014 no crash/wrong key \u2014 but this is the one module-global in the audit that is actually read-modify-written by concurrently spawned threads as a matter of normal operation, not just in theory.",
+      "evidence": "brave/__init__.py:888 _API_KEY_CACHE = {} ; :952-967 def _get_api_key():\\n    label = _API_LABEL\\n    if label in _API_KEY_CACHE:\\n        return _API_KEY_CACHE[label]\\n    key = _seek_api_key(_API_KEY_NAMES)\\n    ...\\n    for n in _API_KEY_NAMES:\\n        os.environ.setdefault(n, key)\\n    _API_KEY_CACHE[label] = key\\n    return key ; thunk path: :5893-5896 def _one(q): ... return _search_full(...) / search(...) -> :981 key = _get_api_key() ; fanout: :5898 gathered = _fanout([(q, (lambda q=q: _one(q))) for q in qs], concurrency=concurrency)",
+      "suggestion": "Resolve the key once in the main thread before building jobs (e.g., key = _get_api_key() in batch()/mosaic()/crawl() and pass it to the thunks), or guard the cache check-then-act with a lock; consider invalidating the cache on 401 so a rotated key is picked up."
+    },
+    {
+      "lens": "Shared mutable global state + thread safety in the exa and brave web-search client modules",
+      "module": "both",
+      "line": 32,
+      "severity": "medium",
+      "category": "shared-global-contract-drift",
+      "description": "Both modules expose one process-lifetime httpx.Client (global _CLIENT, lazy-init at exa:34 / brave:30) and its docstring asserts 'thread-safe for request()'. httpx's own documentation states a Client is not safe for CONCURRENT use of .close() while requests are in flight; brave in particular drives concurrent request() calls through its _fanout pool (up to 8 in parallel in crawl()). If any actor calls _CLIENT.close() (cleanup hook, test teardown, an embedding host) while fanout workers are mid-request, workers raise RuntimeError('Cannot close a client instance which is still in use') and every subsequent search in the process fails permanently \u2014 the global is never re-created. The modules never call close() themselves, so this is a latent contract drift on the shared global, not an in-module bug.",
+      "evidence": "exa/__init__.py:31-40 def _http() -> \"httpx.Client\":\\n    \"\"\"Process-lifetime client. Keep-alive pool; thread-safe for request().\"\"\"\\n    global _CLIENT\\n    if _CLIENT is None:\\n        _CLIENT = httpx.Client(limits=_ENGINE_LIMITS, ...)\\n    return _CLIENT \u2014 brave/__init__.py:27-36 is byte-identical (follow_redirects=False); concurrent use is live in brave via :3632 _fanout([...probe...], concurrency=8) where each thunk does _http().get(...).",
+      "suggestion": "Remove the blanket 'thread-safe' claim and document the close() hazard; or return a fresh request context (httpx use as contextmanager) when concurrency is active, or serialize close() with the same lock used for lazy init."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "module": "both",
+      "severity": "high",
+      "category": "correctness",
+      "line": 232,
+      "description": "The `hasattr(value, \"__await__\"): return value` guard in _wrap_result is dead code. Because _AsyncDict/_AsyncStr/_AsyncList/_AsyncInt/_AsyncFloat/_AsyncBool all subclass their built-in base type, the isinstance checks at the top of _wrap_result (dict/str/list/bool/int/float) always match an already-wrapped value BEFORE the guard is reached. As a result an already-wrapped value is re-wrapped into a brand-new wrapper object instead of being returned untouched, making wrapping non-idempotent and defeating the 'return untouched' contract the guard documents.",
+      "evidence": "exa:216-235 (brave:605-624). Verified: `wd=exa._wrap_result({'a':1}); exa._wrap_result(wd) is wd` -> False (new _AsyncDict created, guard never fires). All six wrapper instances have __await__ yet each still matches its base isinstance branch first (dict/str/list/bool->int/float). The guard only ever catches _AsyncScalar (which has no base isinstance match) and result classes that already define __await__.",
+      "suggestion": "Check `hasattr(value, \"__await__\")` FIRST (before the isinstance chain) so already-wrapped / awaitable values are returned as-is, or re-wrap only when `type(value)` is exactly a built-in (type(value) is dict/str/list/int/float/bool) so subclasses pass through."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "module": "both",
+      "severity": "high",
+      "category": "correctness",
+      "line": 144,
+      "description": "__await__ returns inconsistent kinds of value across the wrapper set: containers (dict/str/list) and primitives (int/float/bool) return a COPY, while _AsyncScalar and the result classes (via _identity_await) return the LIVE object. This contradicts the module docstring's claim that awaiting yields 'the SAME real result', and produces asymmetric aliasing: a sync caller mutating the top-level of a dict sees the change, but the async (awaited) copy does not; conversely a sync caller of a result class and the awaited value are the SAME object. Dict/list copies are also only SHALLOW \u2014 nested objects are shared, so post-await mutation of a nested value leaks into the 'copied' result.",
+      "evidence": "exa:144-147 (_AsyncDict.__await__ -> `return dict(self)`), 164-167 (_AsyncList -> `list(self)`); exa:246-249 (_AsyncScalar.__await__ -> `return self._v` = live object); exa:133-137 (_identity_await -> `return self`); exa:5984-5986 (result classes get _identity_await). Verified: `await _AsyncDict` -> new dict not the wrapper, but `aw['nested'] is orig['nested']` is True (shallow); `await _AsyncScalar(obj) is obj` -> True; `await SearchResults is self` -> True. Docstring exa:108-110: 'value = await fn(...) -> the SAME real result'.",
+      "suggestion": "Pick one semantics and state it: either always return the live instance (so `await x is x` uniformly True and docstring holds) or always return a deep-ish copy, and document that nested objects are shared. Do not mix copy and live semantics for 'the same' await operation."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "module": "both",
+      "severity": "low",
+      "category": "correctness",
+      "line": 196,
+      "description": "_AsyncBool subclasses int (not bool) and defines __new__ via int.__new__(cls, bool(v)), so an _AsyncBool is NOT an instance of bool. Combined with the dead __await__ guard, re-wrapping an _AsyncBool falls into the `isinstance(value, int)` branch of _wrap_result and demotes it to _AsyncInt \u2014 awaiting then yields 1/0 (int) instead of True/False, and __str__/__repr__ lose their bool override. Currently latent because no public function returns a bare bool (all public bool-returning logic is folded into dict results), but it is a real demotion the moment a public func returns a bool.",
+      "evidence": "exa:196-213 (class _AsyncBool(int): def __new__(cls,v): return int.__new__(cls, bool(v))); exa:224-227 (bool check then int check in _wrap_result). Verified: `type(exa._AsyncBool(True)).__name__=='_AsyncBool'`; `isinstance(exa._AsyncBool(True), bool)` -> False; `type(exa._wrap_result(exa._AsyncBool(True))).__name__` -> '_AsyncInt'; `await` of the re-wrap -> 1 (int) instead of True.",
+      "suggestion": "Make _AsyncBool subclass bool, or add an explicit `isinstance(value, _AsyncBool)` (and the other wrapper types) short-circuit at the top of _wrap_result so re-wrapping a wrapper is a no-op rather than a demotion."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "module": "both",
+      "severity": "low",
+      "category": "maintainability",
+      "line": 329,
+      "description": "The guard `if getattr(_obj, \"__name__\", \"\") == \"_async_aware\": continue` in _apply_async_to is dead code. _make_async builds the twin with @functools.wraps(fn), which copies the ORIGINAL function's __name__ onto the wrapper, so no wrapped function ever has __name__ == '_async_aware' (they keep the public name, e.g. 'search'). The guard can never match, so a second call to _apply_async_to on an already-wrapped globals dict would re-wrap each public function rather than skip it.",
+      "evidence": "exa:329-330 (brave:718-719): `if getattr(_obj, \"__name__\", \"\") == \"_async_aware\": continue`. Verified: `w = exa._make_async(lambda:1); w.__name__` -> '<lambda>' (the wrapped fn's original name), never '_async_aware'. Because _apply_async_to runs once at import there is no observable bug today, but the guard provides false assurance and would silently double-wrap on re-application.",
+      "suggestion": "Guard on a stable marker instead of __name__ (e.g. set a custom attribute like `fn.__wrapped_by__ = 'async_aware'` in _make_async and check it, or check `getattr(_obj, '__wrapped__', None) is not None`)."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "module": "both",
+      "severity": "medium",
+      "category": "correctness",
+      "line": 334,
+      "description": "_apply_async_to(globals()) wraps EVERY public module name that is a types.FunctionType, with no filter for functions that were merely IMPORTED rather than defined in the module. `parsedate_to_datetime` (imported from email.utils at module level) is therefore wrapped into an async-aware twin that is exposed as a public module attribute AND is what the internal _retry_after_seconds call site uses. Its datetime return is boxed in _AsyncScalar, so internal code receives a proxied datetime instead of a real one; `.timestamp()` happens to work (proxied via __getattr__) but other datetime ops raise TypeError, making _retry_after_seconds depend on the proxy's partial surface rather than the real type.",
+      "evidence": "exa:24 `from email.utils import parsedate_to_datetime`; exa:61 internal call `dt = parsedate_to_datetime(raw)`; exa:334 `module_dict[_name] = _make_async(_obj)` (brave:21, brave:58, brave:723). Verified: `exa.parsedate_to_datetime` is wrapped; calling it returns `type == _AsyncScalar` (repr datetime(...)); `(wrapped_date) - timedelta(seconds=1)` -> TypeError (only __getattr__ methods like .timestamp() are proxied).",
+      "suggestion": "Restrict wrapping to functions defined in this module (e.g. `if getattr(_obj, '__module__', None) != <this module>: continue`), and import stdlib helpers with a leading-underscore alias so they stay private. Same fix prevents any future `from X import Y` from being silently re-exported as a wrapped public callable."
+    },
+    {
+      "lens": "DUAL SYNC/ASYNC RESULT WRAPPERS",
+      "module": "both",
+      "severity": "medium",
+      "category": "edge-case",
+      "line": 324,
+      "description": "None pass-through is a contract drift. A public function that returns None is boxed in _AsyncScalar(None); the sync caller then receives the proxy, not None, so `result is None` is False (only `not result` is truthy). _AsyncScalar also defers __iter__/__getitem__/__len__/__contains__ straight to None, so those raise TypeError/AttributeError rather than a clean None. Currently latent: no public function in either module returns a bare None (a targeted scan of all wrapped public funcs found none), so this is a latent edge case rather than an active bug \u2014 but it will silently break the moment a public fn adds a 'return None' and any caller tests `is None`.",
+      "evidence": "exa:234-235 / exa:238-261 (_wrap_result fallback `return _AsyncScalar(value)` 'incl. None'; _AsyncScalar.__iter__ -> iter(self._v), __len__ -> len(self._v)). Verified: `w=exa._wrap_result(None); type(w)=='_AsyncScalar'; w is None -> False; bool(w) -> False; iter(w) -> TypeError('NoneType' object is not iterable)`. Scan of all wrapped public functions in exa and brave found no top-level 'return None'.",
+      "suggestion": "Return None (and ideally other identity-sensitive singletons) untouched from _wrap_result, i.e. add `if value is None: return value` before the generic fallback, so `await fn()` and `fn()` both give exactly None and `is None` checks keep working."
+    },
+    {
+      "lens": "API-KEY AUTH + SECRETS",
+      "module": "both",
+      "line": 475,
+      "severity": "high",
+      "category": "cache-invalidation",
+      "description": "_API_KEY_CACHE is written once per label and never invalidated (no .clear()/.pop()/del anywhere in either module). Once a key is resolved, all later calls in the same process return the cached value and never re-read the environment or key files. A user who rotates/fixes the key mid-process (re-export EXA_API_KEY/BRAVE_API_KEY, or edit the key file) gets the SAME stale key on every subsequent call, so 401s persist and the documented recovery ('export a fresh EXA_API_KEY', 're-export', 're-run /login') silently does not work in-process. This is biting for the intended runtime: exa's docstring (lines 112-113) targets a long-lived IPython agent kernel that reuses the module across many await skill.search(...) calls.",
+      "evidence": "exa/src/exa/__init__.py:475-487  if label in _API_KEY_CACHE: return _API_KEY_CACHE[label]; key = _seek_api_key(_API_KEY_NAMES); ... _API_KEY_CACHE[label] = key; return key   ||  brave/src/brave/__init__.py:954-966 (identical). 401 guidance that becomes dead-on-arrival: exa:528 'Your EXA_API_KEY is invalid, expired, or revoked. Re-run /login (choose exa) or export a fresh EXA_API_KEY.' There is no _API_KEY_CACHE.clear()/pop()/del anywhere (grep confirmed only init at exa:409 / brave:888 and the read/write above).",
+      "suggestion": "Make the cache a negative-key-safe memo that re-reads when the underlying source changes, or drop the module-level cache and resolve per call (env lookup is cheap). If keeping the cache, expose an invalidate() and document that re-exporting requires a process restart."
+    },
+    {
+      "lens": "API-KEY AUTH + SECRETS",
+      "module": "both",
+      "line": 469,
+      "severity": "medium",
+      "category": "dotenv-parsing",
+      "description": "Key-store files (~/.prime/agent/keys/exa.key, exa_search_api_key.key, secrets.env, ~/.prime/keys/exa.env, ~/.exa.env \u2014 and the PRIME_DOTENV/env files when the dotenv branch misses) are ALWAYS parsed by the naive _read_key_file, never by python-dotenv: the dotenv branch (exa:430-438 / brave:908-917) iterates only the short `files` env-file list, and even when dotenv is installed it is not applied to the key-store files. Consequences for those files: (a) inline comments are not stripped \u2014 `EXA_API_KEY=abc # note` yields `abc # note`; (b) `.strip(\"'\\\"\")` mangles unbalanced quotes ('abc -> abc, \"abc -> abc, and strips ALL leading/trailing quote chars); (c) the `len>=12 and \"/\" not in line` bare-token heuristic treats the first preamble/metadata line that has no '=' and no '/' as the key, a false positive when a key-store file has a header line (>=12 chars) above the real token. python-dotenv is not a declared dependency (both pyproject.toml list only httpx), so the naive parser is the live path in most deployments.",
+      "evidence": "exa/src/exa/__init__.py:453-471 / brave:932-950  _read_key_file: ... if '=' in line: k,_,v = line.partition('='); if k.strip() in names and v.strip(): return v.strip().strip(\"'\\\"\")  elif len(line) >= 12 and '/' not in line and line not in names: return line.strip().strip(\"'\\\"\")   ||  dotenv used only for env files: exa:430-438 `for p in files: ... return d[n].strip()` (no quote-strip), then exa:447-450 falls through to `for p in key_files: v=_read_key_file(p,names)` (key_files = 5 key-store paths + files). Same shape at brave:908-930.",
+      "suggestion": "Route key-store files through the same parser used for env files (or always use python-dotenv when available, declaring it a dependency) so quoting/comment handling is consistent; gate the bare-token heuristic on the whole file being a single token (e.g. no other K=V lines present) to avoid preamble false positives."
+    },
+    {
+      "lens": "API-KEY AUTH + SECRETS",
+      "module": "both",
+      "line": 485,
+      "severity": "medium",
+      "category": "env-side-effect",
+      "description": "_get_api_key mutates the process environment as a side effect of reading a key: for every key name it runs os.environ.setdefault(n, key), writing the found key into the env even when the user only configured it via a key file or via the *other* name. In brave, _API_KEY_NAMES=['BRAVE_API_KEY','BRAVE_SEARCH_API_KEY'] and _seek_api_key checks them in order, so a stale BRAVE_API_KEY in the env shadows a correct BRAVE_SEARCH_API_KEY (first name wins), and setdefault then also pins BRAVE_SEARCH_API_KEY to that stale value; combined with the never-invalidated cache, unsetting one variable later does not help. Exa (single name) has the same env-mutation smell in a milder form. This is a state-mutation surprise for a library whose only job is to search.",
+      "evidence": "exa/src/exa/__init__.py:485-486 `for n in _API_KEY_NAMES: os.environ.setdefault(n, key)` (names=['EXA_API_KEY'])  ||  brave/src/brave/__init__.py:964-965 `for n in _API_KEY_NAMES: os.environ.setdefault(n, key)` with 886 `_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']` and 893-896 env lookup that returns the first matching name.",
+      "suggestion": "Do not write back to os.environ from a library (remove the setdefault loop); if a downstream tool genuinely needs the var, document that. For brave, prefer the env var the user actually set over an older sibling, or at least don't cross-populate the two names."
+    },
+    {
+      "lens": "HTTP layer, retry, rate-limit, timeouts",
+      "module": "brave",
+      "severity": "high",
+      "category": "correctness",
+      "line": 1716,
+      "description": "Fallback path can crash with AttributeError. _run_fallback (lines 1059-1075) returns None in several cases (fallback GET raises, alt.status_code != 200 at lines 1068-1069, or alt.json() fails at 1071-1073). _request then does `return _run_fallback(...)` at line 1044, so _request returns None. The only caller that passes fallback= is _search_full at line 2010 (`data = _request(path, params, timeout, fallback=fallback, ...)`), which immediately calls `diag = _query_diag(data)` at line 2011 with data=None; _query_diag line 1716 does `q = data.get(\"query\") or {}` -> AttributeError: 'NoneType' object has no attribute 'get'.",
+      "evidence": "line 1044: `return _run_fallback(fallback, params, headers, timeout, path, resp.status_code)`; line 1068-1069: `if alt.status_code != 200:\\n        return None`; line 2010: `data = _request(path, params, timeout, fallback=fallback, headers=loc_headers)`; line 2011: `diag = _query_diag(data)`; line 1716: `q = data.get(\"query\") or {}`",
+      "suggestion": "In _search_full, guard the fallback return: `data = _request(...)` then `if data is None: raise BraveError('local search failed and web fallback also failed')` before calling _query_diag; or make _request re-raise the original transient error instead of returning None when the fallback yields nothing."
+    },
+    {
+      "lens": "HTTP layer, retry, rate-limit, timeouts",
+      "module": "exa",
+      "severity": "medium",
+      "category": "reliability",
+      "line": 507,
+      "description": "exa._request does not catch any transport-level httpx exception. The request call at line 507 is not wrapped in try/except, so httpx.ConnectError/ConnectTimeout/ReadTimeout/PoolTimeout propagate out of _request as raw httpx exceptions with NO retry. This contradicts the docstring (lines 502-500) that 'Transient failures (429 rate-limit, 5xx) are retried up to _retries times with short exponential backoff so a single throttled call does not kill a fan-out.' Only 4xx/5xx status codes (line 518) are retried; a slow response (ReadTimeout at the 45s/60s/90s timeouts used by search/answer/agent) or a connection blip is not retried and surfaces as an unhandled exception to every public caller (search, run, answer, agent, ...).",
+      "evidence": "lines 506-508: `for attempt in range(_retries + 1):\\n        resp = _http().request(method, url, params=params, json=json_body,\\n                               headers={\"x-api-key\": api_key}, timeout=timeout)` (no surrounding try/except); contrast brave lines 991-1008 which wrap the request in `try: ... except (httpx.TimeoutException, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)`. ",
+      "suggestion": "Wrap the _http().request(...) call in try/except for (httpx.TimeoutException, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) and treat it like a transient failure: sleep(_retry_after_seconds(None, 2**attempt*0.5)) and continue within the attempt loop, raising a clean ExaError after exhausting attempts."
+    },
+    {
+      "lens": "HTTP layer, retry, rate-limit, timeouts",
+      "module": "exa",
+      "severity": "medium",
+      "category": "correctness",
+      "line": 518,
+      "description": "Non-idempotent stateful requests are blindly re-sent on 429/5xx. _request retries (lines 518-520) apply to every method, including state-creating POST/PATCH/DELETE calls: POST /agent/runs (line 2404, charges agent compute), POST /monitors (line 2998), POST /v0/websets (line 3384), PATCH /monitors/{id} (3019/3216/3917/4014/4018), POST /v0/imports (3950), etc. If a 5xx is returned after the server has already created the resource (or a POST is retried after a 429), the resource can be created twice / billed twice. Even the read endpoints POST /search, /answer, /contents bill per call, so a retried 5xx doubles cost.",
+      "evidence": "lines 518-520: `if status in (429, 500, 502, 503, 504) and attempt < _retries:\\n            time.sleep(_retry_after_seconds(resp, 2 ** attempt * 0.5))\\n            continue` (applies regardless of method); line 2404: `created = _request(\"POST\", \"/agent/runs\", key, json_body=body, timeout=min(timeout, 30))`",
+      "suggestion": "Only auto-retry idempotent requests, or make _request accept an idempotency signal; for stateful POST/PATCH/DELETE, retry 5xx only when the response indicates the request was not processed, and/or send a client-generated idempotency key on mutating endpoints."
+    },
+    {
+      "lens": "HTTP layer, retry, rate-limit, timeouts",
+      "module": "both",
+      "severity": "low",
+      "category": "thread-safety",
+      "line": 34,
+      "description": "Lazy init of the shared process-lifetime httpx.Client and the shared ThreadPoolExecutor is an unlocked check-then-set on a module global, despite the docstring claiming 'thread-safe for request()'. Under concurrent first use (brave batch()/mode='all' _fanout and exa fan-out all submit thread-pool thunks that call _request->_http() at once), two threads can both observe _CLIENT is None and each construct a Client (leaking one, doubling the 16-connection pool briefly); the same pattern applies to _WORKERS, leaking a ThreadPoolExecutor with live threads.",
+      "evidence": "exa lines 31-40 / brave lines 27-36: `global _CLIENT\\n    if _CLIENT is None:\\n        _CLIENT = httpx.Client(limits=_ENGINE_LIMITS, ...)`; exa lines 43-47 / brave lines 39-43: `global _WORKERS\\n    if _WORKERS is None:\\n        _WORKERS = ThreadPoolExecutor(max_workers=n, ...)`. No lock guards either block.",
+      "suggestion": "Guard lazy init with a module-level threading.Lock (create-once under the lock, then re-check the global), or eagerly create _CLIENT/_WORKERS at import time so the check-then-set race disappears."
+    },
+    {
+      "lens": "HTTP layer, retry, rate-limit, timeouts",
+      "module": "exa",
+      "severity": "low",
+      "category": "robustness",
+      "line": 510,
+      "description": "Success-path resp.json() is unguarded. On a 2xx response exa does `return resp.json()` with no try/except, so a 2xx with an empty or non-JSON body raises a raw JSONDecodeError out of _request to every caller. Note the failure path right below (lines 512-515) DOES guard resp.json(), so only the success path is exposed; brave explicitly handles the analogous '200-but-unparseable' case as a transient retry (brave lines 1017-1025), exa does not.",
+      "evidence": "exa lines 509-510: `if resp.status_code < 400:\\n            return resp.json()` (unguarded); versus lines 512-515: `try:\\n            detail = resp.json()\\n        except Exception:\\n            detail = resp.text[:500]` (guarded)",
+      "suggestion": "Wrap the success-path resp.json() in try/except and, on failure, treat it as a transient server-side oddity (retry within the attempt loop) before surfacing a clean ExaError."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "brave",
+      "line": 2345,
+      "severity": "high",
+      "category": "contract-drift / bug",
+      "description": "brave.research() returns the AI-summary deep-link under key 'summary_dead_link', but its public Returns contract documents 'summary_deep_link'. A caller following the docs and reading result['summary_deep_link'] gets KeyError; the value is actually present under a typo'd key.",
+      "evidence": "Docstring (src/brave/__init__.py:2263-2266) promises: Returns: {\"query\", \"queries\", \"mode\", \"results\":[dedup items], \"n\", \"sources\":[hosts], \"infobox\", \"faq\", \"videos\", \"discussions\", \"summary_deep_link\", \"per_search\", \"exhausted\", \"render\": str, \"duplicates\": int}. Code (src/brave/__init__.py:2345) emits: \"summary_dead_link\": summary_dl. Grep confirms 'summary_deep_link' appears only in the docstring and 'summary_dead_link' only in the code. Reproduced offline (patch brave._search_full): research('topic') returned a dict whose keys include 'summary_dead_link' and NOT 'summary_deep_link'. No test exercises research() at all, so the mismatch is undetected.",
+      "suggestion": "Offline test: patch brave._search_full to return a web page that carries summarizer={deep_link:'LINK', ...}; call brave.research('topic', summary=True); assert the returned dict exposes the deep link under the documented key 'summary_deep_link' (and that 'render' is a non-empty str, 'n' == deduped count, 'exhausted' reflects provider stop). Failing this test now confirms the bug; also fix line 2345 to emit 'summary_deep_link'."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "exa",
+      "line": 1415,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "exa.search / run / SearchResults.to_agent documented cost + grounding contracts have zero test coverage. No existing test calls exa.search or exa.run at all.",
+      "evidence": "usage.md:109-110 documents: \"to_meta(), total_cost(), and cost_breakdown() preserve reported usage; missing costs are unknown, not zero.\" search() docstring (src/exa/__init__.py:1478-1484) promises '.answer holds the synthesized content and .answer_grounding the per-field source citations'. run() docstring (src/exa/__init__.py:1638-1644): 'Pass output_schema ... appended below the list as --- synthesized answer ---'. Reproduced offline: exa.search with costDollars={total:0.012,search:{neural:.007,keyword:.005}} \u2192 total_cost()==0.012, cost_breakdown()=={'total':.012,'modes':{neural,keyword}}, to_agent() includes 'cost'; search(output_schema=...) \u2192 .answer + .answer_grounding surfaced and to_agent() includes 'grounding'; exa.run('q',with_text=True) rendered '1. T1' list plus '--- synthesized answer ---\\nSYNTH ANSWER'. None of this is asserted anywhere in tests/.",
+      "suggestion": "Offline test: patch exa._get_api_key and exa._request. (a) exa.search: assert isinstance SearchResults, .total_cost()/.cost_breakdown()/.search_time_ms match costDollars/searchTime, to_agent() carries cost+request_id, and with output_schema the .answer/.answer_grounding propagate into to_agent()['grounding']. (b) exa.run: assert the numbered list and, when the response has output.content, the '--- synthesized answer ---' block is appended. (c) edge: costDollars absent \u2192 total_cost() is None (not 0) and to_agent() omits 'cost' (usage.md: 'missing costs are unknown, not zero')."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "exa",
+      "line": 1895,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "exa.answer / agent / agent_structured documented cost + grounding + structured-guard contracts are untested. No existing test touches any of the three, nor AgentRun/Answer.",
+      "evidence": "jobs.md:20-23: \"agent_structured(query, schema) checks that structured output exists; it is not a local JSON Schema validator. run.grounding and run.citations link fields to sources. ... run.cost, usage, and connects report available spend\". answer() docstring (src/exa/__init__.py:1930-1931) returns 'an Answer with .answer (str or dict) and .citations list'. AgentRun.cost (line 1992-1994) = cost_dollars.total; .citations (1978) dedups grounding; .connects (1997) maps dataSources. Reproduced offline: exa.answer \u2192 Answer(.answer,.sources,.cost_dollars); exa.agent (patch _request POST\u2192created, GET\u2192completed with grounding+usage+costDollars) \u2192 .cost==0.5, .connects=={'fiber':{calls:4,cost_usd:.3}}, .connect_cost_usd==.3, .citations/.sources deduped, .done True; exa.agent_structured raises ExaError when AgentRun.structured is None. Uncovered by any test.",
+      "suggestion": "Offline test: patch exa._get_api_key and exa._request. (a) answer(): assert Answer.answer, .sources (url-only list), .cost_dollars, and to_dict() key set. (b) agent(): simulate POST creating a queued run then GET polling to a completed run carrying output.text/structured/grounding + usage.dataSources + costDollars; assert .text/.structured/.cost/.citations/.connects/.done and that to_markdown() contains the cost. (c) agent_structured(): with agent() patched to return a run whose structured is None, assert ExaError is raised; with structured set, assert the same run object is returned. (d) agent() raise_on_failed: a completed-but-failed status raises; timeout (done None) raises ExaError with the run id."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "exa",
+      "line": 1679,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "exa.fetch string-vs-list return-shape contract is untested. Only the failed-URL envelope is covered; the documented list-vs-formatted-string switch (including the 'one-element list still yields a string' rule and the rich-option override) has no test.",
+      "evidence": "usage.md:64-65: \"Without it, fetch returns a list or a formatted string for a single plain-text result\u2014even when the input was a one-element list.\" Branch lives at src/exa/__init__.py:1820-1835 (len(results)==1 and mode=='text' and no highlights/summary/extras/max_age_hours \u2192 return rendered string; else list). Reproduced offline: fetch(urls='one url') \u2192 _AsyncStr '--- T ---\\nBODY'; fetch(urls=['one url']) \u2192 _AsyncStr (list input still a string, per doc); fetch(urls=[two urls]) \u2192 _AsyncList len 2; fetch(urls='one', with_highlights=True) \u2192 _AsyncList (rich option forces list). None of these shapes is asserted in tests/ (the existing fetch test only checks the failed-URL envelope).",
+      "suggestion": "Offline test: patch exa._get_api_key and exa._request. Assert: (a) single URL string, no rich opts, plain text \u2192 returns a str starting '--- <title> ---' with body truncated to max_characters; (b) single-URL one-element list, no rich opts \u2192 also a str (the doc's explicit edge); (c) two URLs \u2192 a list of per-URL dicts; (d) with_highlights=True or with_summary=True forces a list even for one URL; (e) a failed crawl with no text still surfaces the structured error rather than an empty string (branch at line 1827 'if t or r0.get(\"error\") is None')."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "brave",
+      "line": 2197,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "brave.merge documented 'deduplicates results by URL' + per-source _query tagging is untested.",
+      "evidence": "api.md:70: \"merge(*searches) deduplicates results by URL.\" Docstring (src/brave/__init__.py:2197-2209): 'a small research helper ... combine their results into a single URL-deduped ranked list ... Returns a flat list of merged dicts (each tagged with its original _query)'. Logic at lines 2212-2223 dedups on url/page_url and setdefault('_query', ...). Reproduced offline: merge(a,b) with a duplicate https://x.org/1 across both dicts \u2192 3 items, duplicate dropped, _query tags ['QA','QA',None] (dict-form query uses .original, string-form query yields None tag). No test exercises merge().",
+      "suggestion": "Offline test: build two search dicts (one with query as a diagnostics dict {'original':...}, one with a plain string) sharing a duplicate url; call brave.merge(a,b) and assert (a) the duplicate url appears once, (b) order is first-occurrence-wins, (c) each item is tagged _query from its source, (d) dedupe=False preserves the duplicate, (e) reads from either 'results' or 'web' key."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "brave",
+      "line": 3513,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "brave.probe / summarize_page success-semantics contract is untested. No existing test touches either.",
+      "evidence": "api.md:76-79: \"probe(url, max_chars=..., timeout=...) fetches and cleans HTTP content. Check status == 200 and nonempty text; there is no universal ok field. ... summarize_page(url, ...) chooses a lead and weighted sentences locally.\" probe() (src/brave/__init__.py:3513) raises BraveError on any non-200 (line 3552-3554) and returns {url,status,title,text,chars,truncated,final_url}. summarize_page (line 5302) propagates probe's exception on non-200 and returns {summary,points,readable,...}. Reproduced offline (patch brave._http): probe on a 200 text/html page \u2192 status==200, title extracted, <p> text cleaned, truncated False; on a 404 \u2192 BraveError category 'http'; summarize_page on the 404 propagates BraveError rather than returning a digest. Untested.",
+      "suggestion": "Offline test: patch brave._http (return a fake client whose .get yields a fake response). Assert: (a) probe 200 text/html \u2192 status 200, nonempty text with tags/entities stripped, title parsed from <title>, truncated True + trailing '\u2026' when text exceeds max_chars; (b) probe non-200 \u2192 BraveError with category 'http'; (c) probe network failure (httpx exception) \u2192 BraveError category 'network'; (d) summarize_page on a rich page \u2192 .summary is a lead paragraph, .points is a list \u2264 max_points, .readable contains title+url+key points; (e) summarize_page on a non-200 \u2192 does not return a points dict (surfaces the fetch failure), matching api.md's 'status==200' success gate."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "brave",
+      "line": 4064,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "brave.rich verticals (hint-then-fetch + per-vertical normalization) are untested.",
+      "evidence": "verticals.md:68-71: \"rich(query) requests a callback hint from web search and then fetches its payload when present; fetch=False requests only the hint.\" Docstring (src/brave/__init__.py:4064-4093) returns {type:'rich',query,hint,callback_key,vertical,results:[{subtype,provider,data}],render,raw}. rich() calls _search_full(enable_rich_callback=True), reads rich.hint.callback_key, then _rich_fetch(cb) and normalizes via _rich_result/_rich_weather/etc. Reproduced offline: patch _search_full to return rich.hint.callback_key='cb1'/vertical='weather' and patch _rich_fetch to a weather payload \u2192 rich('weather') returns callback_key 'cb1', vertical 'weather', results[0].subtype 'weather', provider dict, data.location.name 'NYC', data.current.temp, data.daily[0].temp_day, and a '[Weather in NYC, US]' render. Also untested: fetch=False short-circuit and the no-callback-key path. No test covers rich() or any vertical normalizer.",
+      "suggestion": "Offline test: patch brave._search_full (return a payload with rich.hint.callback_key + vertical) and brave._rich_fetch (return a vertical payload). Assert: (a) with callback_key present + fetch=True \u2192 results[0] is normalized {subtype,provider,data} for the vertical (use weather and, if cheap, one of stocks/crypto/currency to hit _rich_*), callback_key and vertical echo through, 'render' present; (b) fetch=False \u2192 no _rich_fetch call, results==[] but callback_key still returned; (c) no callback_key \u2192 results==[] without raising; (d) an unknown subtype falls through to the passthrough guard (data = raw)."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "brave",
+      "line": 4450,
+      "severity": "medium",
+      "category": "coverage-gap",
+      "description": "brave.place_search documented resolved-anchor + coordinate-intent + validation guards are untested.",
+      "evidence": "verticals.md:53-54: \"place_search(query, location=...) uses a place-name anchor; latitude, longitude, and radius allow coordinate intent. Check resolved before treating results as local.\" Docstring (src/brave/__init__.py:4484-4489) returns {query, results, cities/countries/regions/neighborhoods, addresses/streets, mixed, resolved:{name,country,coordinates}, n, count, render}. Guards at lines 4491-4499 raise ValueError when neither coords nor location given, when only one of lat/lon given, or when count not 1..100. Reproduced offline (patch _get_api_key/_request): place_search('coffee', location='san francisco') \u2192 resolved{name,country,coordinates} populated, results normalized via _location_item, all geo/address buckets present, n correct. Note: result latitude/longitude come from the item's 'coordinates' array, not top-level lat/lon keys. No test exercises place_search or its ValueError guards.",
+      "suggestion": "Offline test: patch brave._get_api_key and brave._request (return a place payload with results[], location{name,country,coordinates}, and the geo buckets). Assert: (a) 'resolved' reflects the API location anchor; (b) results are normalized (title/address/phone/rating) and n==len(results); (c) cities/addresses buckets normalize; (d) render contains the '[Places]' and resolved header. Also assert the three ValueError guards: place_search() with no anchor, place_search(lat=.., longitude=None), and place_search(location='x', count=0) each raise ValueError."
+    },
+    {
+      "lens": "TEST COVERAGE + CONTRACTS: which documented public contracts are NOT covered by tests/test_search_contracts.py, and what an offline test (monkeypatching exa._request / brave._search_full) should assert. Every claim below was reproduced offline with the real modules (exa 0.19.0) and patched transports; the existing 6 tests pass.",
+      "module": "both",
+      "line": 0,
+      "severity": "low",
+      "category": "coverage-gap",
+      "description": "Large tail of documented public helpers have NO test coverage at all. Beyond the four tested contracts, the documented surface in the SKILL.md tables + references is essentially untested.",
+      "evidence": "Documented but zero-coverage (verified present in the modules and referenced by docs): exa \u2014 brief, find_similar/similar_to, answer variants, stream_answer/stream_search/agent_trace, explain, magic, entity_search/top_terms/entity_* helpers, deep_research/merge_searches/diff_results/news_roundup/company_dossier, the webset_*/monitor_*/import_*/webhook_*/event_* families, github_repo/code_search/hf_models etc. brave \u2014 run, batch, research, software, near/locations/forums/headlines/clips/pictures/recipes/products/movies/structured/infobox/thumbnails/drinks/domain/find_files, news_cluster/news_breaking/news_beams/news_live, open_now, crawl, pois/poi_descriptions/place_detail, all rich verticals (weather/stock_quote/crypto/definition/currency_x/convert_values/unix_time/package), the developer family (docs/code_result/qna/github_repos/github_issues/error_solution/stack_trace/cve_lookup/dep_signal/...), and the stub helpers related/trending_topics/trending_libs/docker_aliases (api.md:97-98 documents they 'return limitation notes rather than discovery data' \u2014 a documented behavior with no assertion).",
+      "suggestion": "Priority order for adding offline coverage: (1) the medium findings above; (2) brave.run (readable rendering, SKILL.md's default entry) and brave.batch (documented 'fans out queries and reports individual payloads/errors', api.md:69 \u2014 per-query error isolation is a real, untested behavior); (3) the documented stub helpers (related/trending_topics/trending_libs/docker_aliases) asserting they return limitation-note strings, not discovery data; (4) exa entity/roster helpers and deep_research/merge_searches dedupe behavior. Each should monkeypatch exa._request or brave._search_full and assert the documented return-shape keys."
+    },
+    {
+      "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+      "module": "both",
+      "severity": "medium",
+      "category": "duplication",
+      "line": 133,
+      "description": "The entire dual sync/async wrapper set is byte-identical across the two modules: exa/__init__.py lines 133-334 vs brave/__init__.py lines 522-723. This includes _identity_await, _AsyncDict, _AsyncStr, _AsyncList, _AsyncInt, _AsyncFloat, _AsyncBool, _wrap_result, _AsyncScalar, _make_async, _apply_async_to (~200 lines). A `diff` of the two ranges is empty (IDENTICAL). Both also carry the identical module-tail activation call `_apply_async_to(globals())` (exa:5988, brave:7213). Because the copy is verbatim, any bug or fix applied to one copy will silently diverge from the other \u2014 the highest-value target for an internal _common module.",
+      "evidence": "exa 133-137: 'def _identity_await(self): ... if False: # pragma: no cover - makes this a generator (required by await)\\n        yield\\n    return self' ; exa 140-147 class _AsyncDict(dict) with __await__ returning dict(self) ; exa 216 'def _wrap_result(value):' ; exa 311 'def _apply_async_to(module_dict):' // brave 522-526 identical _identity_await ; brave 529 class _AsyncDict ; brave 605 _wrap_result ; brave 700 _apply_async_to. diff <(sed -n '133,334p' exa/...) <(sed -n '522,723p' brave/...) -> IDENTICAL.",
+      "suggestion": "Move the whole block into a shared internal module (e.g. search_skills/_common/awaitable.py) and have both exa and brave import it; keep each module's trailing `_apply_async_to(globals())` call pointing at the shared function."
+    },
+    {
+      "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+      "module": "both",
+      "severity": "medium",
+      "category": "duplication",
+      "line": 411,
+      "description": "The API-key lookup trio is byte-identical: exa/__init__.py lines 411-488 vs brave/__init__.py lines 890-967 (_seek_api_key, _read_key_file, _get_api_key). `diff` of each function range is empty (IDENTICAL). The only differences are the module constants that parameterize it: exa has `_API_KEY_NAMES = ['EXA_API_KEY']`, `_API_LABEL = \"exa\"` (lines 407-408); brave has `_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']`, `_API_LABEL = \"brave\"` (lines 886-887); both define `_API_KEY_CACHE = {}` (exa:409, brave:888). This is credential-resolution logic duplicated across both, so a behavior change or a path/env bug in one copy will not propagate to the other.",
+      "evidence": "Both define verbatim: 'def _seek_api_key(names=None):\\n    from pathlib import Path\\n    names = names or _API_KEY_NAMES\\n    for n in names:\\n        v = os.environ.get(n, \"\")\\n        if v and not v.startswith(\"${\"):\\n            return v ... stem = names[0].split(\"_\")[0].lower() ... return \"\"' ; 'def _read_key_file(path, names): ... if k.strip() in names and v.strip(): return v.strip().strip(\\\"'\\\"\\\\\\\"\\\")' ; 'def _get_api_key(): label = _API_LABEL ... _API_KEY_CACHE[label] = key; return key'. diff of 411-451/890-930, 453-471/932-950, 473-488/952-967 all -> IDENTICAL.",
+      "suggestion": "Lift the trio into _common with an injected (key_names, label) or a per-skill config object; each module passes its own _API_KEY_NAMES/_API_LABEL. Preserve the per-label _API_KEY_CACHE dict."
+    },
+    {
+      "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+      "module": "both",
+      "severity": "low",
+      "category": "duplication",
+      "line": 26,
+      "description": "The HTTP-engine core is duplicated with only trivial renames: module globals _ENGINE_LIMITS/_CLIENT/_WORKERS plus _http, _pool, _retry_after_seconds, _fanout. exa 26-79 vs brave 23-80. Bodies are verbatim except: `_http` uses `follow_redirects=True` in exa vs `follow_redirects=False` in brave; `_pool` uses `thread_name_prefix=\"exa\"` vs `\"brave\"`; `_retry_after_seconds` and `_fanout` differ only in docstring text. Note the intended `follow_redirects` difference means a _common _http must be parameterized, not shared as-is. exa additionally defines `_poll_until` (82-100) which has no brave counterpart, so it is exa-specific. These are small, low-risk duplicates.",
+      "evidence": "_http: exa line 37 'follow_redirects=True' vs brave line 33 'follow_redirects=False' (rest of body identical). _pool: exa 46 'ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"exa\")' vs brave 42 'thread_name_prefix=\"brave\"'. _retry_after_seconds diff shows only an added docstring line in brave. _fanout diff shows only differing docstrings; the submit/collect loop (pool.submit / fut.result / try-except append) is identical.",
+      "suggestion": "Move _ENGINE_LIMITS/_CLIENT/_WORKERS/_http/_pool/_retry_after_seconds/_fanout into _common, making _http take a follow_redirects flag and _pool take a thread_name_prefix. Leave exa's _poll_until in exa (no counterpart in brave)."
+    },
+    {
+      "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+      "module": "both",
+      "severity": "low",
+      "category": "duplication",
+      "line": 709,
+      "description": "Domain/url helpers are CONCEPTUALLY overlapping but DIVERGENT, not near-identical \u2014 flagging so a refactor does NOT wrongly merge them. exa `_domain_of` (709-724) computes a registrable domain by stripping scheme/www and slicing the last two labels, and a `hostname` property (693-700) uses urllib.parse.urlparse(...).hostname. brave `_url_host` (114-122) also uses urlparse(...).hostname but lowercases and strips a leading 'www.', and brave `_host` (1081-1084) just reads meta_url.hostname. Same problem space (extract host from a URL), different algorithms and outputs (registrable-domain vs full hostname). The overlap is only the shared `urlparse().hostname` idiom.",
+      "evidence": "exa 716 'host = url.split(\"//\", 1)[-1].split(\"/\", 1)[0] ... return \".\".join(labels[-2:])' (registrable domain) ; exa 698 'urllib.parse.urlparse(u if \"://\" in u else \"https://\" + u).hostname' ; brave 119 'host = (urlparse(str(url)).hostname or \"\").lower()' ; brave 122 'return host[4:] if host.startswith(\"www.\") else host'. No shared function; only the urlparse.hostname idiom matches.",
+      "suggestion": "Do not fold these into a single shared helper without first unifying the contract (registrable-domain vs host-without-www). If desired, share only a small `urlparse hostname` primitive and keep each module's post-processing separate."
+    }
+  ]
+}

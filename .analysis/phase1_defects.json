@@ -1,0 +1,682 @@
+[
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 1044,
+  "severity": "critical",
+  "category": "swallowed-error-cascade-crash",
+  "description": "_run_fallback (line 1059) returns None for ANY failure of the fallback endpoint (connection error, non-200, non-JSON), and _request returns that None at line 1044 as if it were a successful payload. The sole caller _search_full (line 2010) immediately executes `diag = _query_diag(data)` and `data.get(...)` with data=None, raising AttributeError: 'NoneType' object has no attribute 'get' at line 2011. Trigger: mode='local' with a key lacking local support that returns a retryable status (429/5xx/404) on the local endpoint while the web fallback GET also fails. The docs promise 'Local mode can fall back to web search; inspect `fallback`' (references/api.md line 96) \u2014 instead the whole search crashes.",
+  "suggestion": "In _request, when `fallback` is set and `_run_fallback` returns None, raise the original classified error (`error`) instead of returning None."
+ },
+ {
+  "where": "brave:brave-item-normalizers",
+  "line": 1779,
+  "severity": "high",
+  "category": "wrong-data",
+  "description": "_summarizer fallback path builds a malformed deep link: 'https://search.brave.com/summarizer?key=' + _up.urlencode({'key': key}) produces '...summarizer?key=key=%3C...%3E' (the literal 'key=' prefix is doubled because urlencode already emits the key name). The success path at line 1776 correctly uses '?' + urlencode without the hardcoded 'key='. Any string key that fails json.loads (or parses to a non-dict, e.g. a string, triggering AttributeError at line 1769) hits this branch and yields a broken link.",
+  "suggestion": "Use the same construction as line 1776: 'https://search.brave.com/summarizer?' + _up.urlencode({'key': key})"
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 475,
+  "severity": "high",
+  "category": "stale-cache / wrong recovery path",
+  "description": "_get_api_key returns _API_KEY_CACHE[label] before ever re-reading the environment. Once a key has been resolved, a corrected EXA_API_KEY re-exported in the same long-lived process (exactly the recovery the ExaAuthError message on line 528 tells the user to do: 'export a fresh EXA_API_KEY') is ignored and the stale key keeps producing 401s forever. There is no cache-invalidation or re-check path anywhere in the module.",
+  "suggestion": "Prefer the live environment variable over the cache (cache only file-derived keys, or re-run _seek_api_key when os.environ.get(_API_KEY_NAMES[0]) differs from the cached value)."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 1015,
+  "severity": "high",
+  "category": "dead-branch-contract-drift",
+  "description": "`if isinstance(data, dict) or data is not None:` is a tautology equivalent to `if data is not None:` (a dict is never None). So the intended '200-but-unparseable is a server-side oddity; treat as transient' path (lines 1017-1025) is unreachable: resp.json() that parses to None (literal 'null'), a bare JSON string, number, or list is returned as the payload. Any downstream `data.get(...)` (e.g. _query_diag at line 1716) then crashes with AttributeError/TypeError on a non-dict 'successful' response.",
+  "suggestion": "Use `if isinstance(data, dict):` so non-dict/None 200 bodies fall through to the retry/raise path as the comment intends."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 1041,
+  "severity": "high",
+  "category": "operator-precedence",
+  "description": "`if fallback and resp.status_code != 200 and (retryable or not fast_fail and fallback is not None):` \u2014 `and` binds tighter than `or`, so the condition is `... and (retryable or ((not fast_fail) and (fallback is not None)))`. `fallback is not None` is always true here (first clause of the chain), making the inner `and` dead; and a fast-fail status that is also retryable (e.g. a 429 body tagged component=authentication) silently takes the fallback, inverting the 'definitive errors are not retried/fallen-back' contract stated in the docstring (lines 975-976).",
+  "suggestion": "Explicitly parenthesise: `if fallback and resp.status_code != 200 and (retryable or not fast_fail):` and drop the redundant `fallback is not None` (and possibly the _fallback_ok stub)."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5812,
+  "severity": "high",
+  "category": "wrong-results",
+  "description": "The deprecation gate regex r\"\\b(deprecat|obsolete|removed|migrat|breaking|sunset)\\b\" (also 5800, and the shaded copies 5550/5554/5567) requires a word boundary on BOTH sides of each stem. Since 'deprecat', 'remov', 'migrat' are stems, not whole words, \\bdeprecat\\b only matches the literal non-word 'deprecat'. Verified: it fails to match 'deprecated', 'deprecation', 'deprecating', 'removed', 'removal', 'migration', 'migrating' \u2014 i.e. the actual deprecation vocabulary \u2014 while only catching whole words 'obsolete', 'removed', 'breaking', 'sunset', 'end of life'. _dep_type() (substring, no \\b) would classify 'deprecated' fine, but items never reach it because this gate rejects them first. Net effect: deprecations() returns near-empty signals/counts for its primary use case.",
+  "suggestion": "Drop the trailing \\b (keep leading \\b only) or use substring matching: r\"\\b(deprecat|obsolet|end[- ]of[- ]life|remov|migrat|breaking|sunset)\" so stems match as prefixes."
+ },
+ {
+  "where": "exa:exa-imports-events-research",
+  "line": 4453,
+  "severity": "high",
+  "category": "contract-drift / silently-wrong-data",
+  "description": "In the default call (max_age_hours=None), `fetch([result_r.url], max_characters=text_cap, include_sections=[\"body\"], text_verbosity=\"standard\", max_age_hours=None)` hits fetch()'s backward-compat single-URL string branch (fetch lines 1823-1832: condition `len(results)==1 and mode==\"text\" and not(with_highlights or with_summary) and not extras_links and max_age_hours is None` is all True, and it does not account for include_sections/text_verbosity). So `body` is a `str`, not a list. The `isinstance(body, list)` check at line 4456 is then False, so website_url/website_title/website_text are NEVER added, and no website_error is set either. The docstring promises these fields on a successful fetch_website, but the normal success path returns a dict without them.",
+  "suggestion": "Pass include_meta=True (fetch then returns an envelope with 'results'), or force a non-None max_age_hours, or make fetch() treat include_sections/text_verbosity as 'rich options' that disable the string form. Then read body['results'][0]['text']."
+ },
+ {
+  "where": "exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line": 3697,
+  "severity": "medium",
+  "category": "return-shape / contract drift",
+  "description": "webset_eval_review's docstring (lines 3668-3669) promises keys 'item_count' and 'by_satisfied', but the actual return (lines 3697-3698) uses 'count' and 'by_satisfaction'. Any caller following the documented shape gets KeyError on result['item_count'] or result['by_satisfied'].",
+  "suggestion": "Rename the returned keys to match the docstring (item_count, by_satisfied) or update the docstring to 'count'/'by_satisfaction'."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 2998,
+  "severity": "medium",
+  "category": "dead-parameter/contract-drift",
+  "description": "monitor_create's `timeout=45.0` keyword is accepted (line 2934) but never used; the request hardcodes timeout=30. A caller passing timeout=120 gets a 30s request that can raise httpx.TimeoutException earlier than requested, and the default is also not the documented 45s.",
+  "suggestion": "Pass timeout=timeout to _request (or drop the parameter)."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3113,
+  "severity": "medium",
+  "category": "return-shape/doc-drift",
+  "description": "monitor_check docstring promises a dict with 'latest_run' (and references nonexistent parameter 'auto_if_empty' at line 3114); the actual returns are {monitor_id, has_run, run_id, run_output, triggered} with no 'latest_run' key in either branch (lines 3123-3129, 3135-3141). Callers keying off documented fields get KeyError/None.",
+  "suggestion": "Add 'latest_run' (the full run dict) to both return dicts or fix the docstring; rename auto_if_empty to trigger_if_empty."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3122,
+  "severity": "medium",
+  "category": "logic/doc-deviation",
+  "description": "monitor_check triggers a new run whenever runs_data[0] has no output, even when an older completed run with output exists, and even while a run is in progress. Docstring (line 3103) and jobs.md say it should only trigger when the monitor has NO completed run, so e.g. runs=[running, completed-with-output] triggers a duplicate/paid run contrary to documented semantics.",
+  "suggestion": "Scan the fetched runs for a completed run with output first; only trigger if none exists (and ideally skip if latest is still 'running')."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 1024,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "top_terms() docstring (lines 1007-1008) promises domain_clusters entries shaped {\"domain\",\"results\"} but the actual key returned is \"count\" ({\"domain\": d, \"count\": c}). Downstream code or skill instructions following the documented shape get KeyError on 'results'.",
+  "suggestion": "Either rename the returned key to 'results' or fix the docstring to 'count'."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 931,
+  "severity": "medium",
+  "category": "wrong-data",
+  "description": "entity_schema() silently coerces any unsupported entity kind that HAS properties to typ='company' (line 931). For a record with type 'entity' or 'organization' (both are real Exa kinds; 'entity' is even in the _ENTITY_TYPES tuple) it returns type='company', schema_model='CompanyEntity', and presence/absence computed against company fields - the returned 'type' no longer matches entity_type(entity), mislabeling the entity and its missing/present lists.",
+  "suggestion": "Return the original kind in 'type' and report the known-attribute surface for an unrecognized kind instead of forcing the company schema (or add an explicit 'coerced_from' field)."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 826,
+  "severity": "medium",
+  "category": "dead-parameter",
+  "description": "entity_search() accepts dedupe: bool = True but never reads it; deduplication always happens, so dedupe=False still dedupes - a silent contract violation for callers who pass it.",
+  "suggestion": "Honor dedupe=False (skip roster dedup, keep all records) or drop the parameter."
+ },
+ {
+  "where": "exa/__init__.py:exa-streaming",
+  "line": 2624,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "stream_answer's docstring documents the trailing meta dict as \"cost_dollars\": {...} (an object), and the rest of the module treats cost as a dict (e.g. costDollars.total, SearchResults.total_cost). But the code (line 2675) collapses it to the scalar float (obj.get('costDollars') or {}).get('total'), so the yielded dict actually carries cost_dollars as a float/None.",
+  "suggestion": "Either emit the raw costDollars dict to match the doc/module convention, or fix the docstring example to show a scalar; a caller that does meta['cost_dollars']['total'] per the documented shape raises TypeError/AttributeError."
+ },
+ {
+  "where": "exa/__init__.py:exa-streaming",
+  "line": 2834,
+  "severity": "medium",
+  "category": "inconsistent-validation",
+  "description": "stream_search builds body['numResults']=num_results with no client-side validation. search() calls _validate_search_params (line 1488) to enforce 1<=num_results<=100, and references/usage.md (line 32) advertises that 'the client validates num_results from 1-100'. stream_search skips this, so num_results=0/200 reach the API and surface as a raw HTTP 400 wrapped in a generic ExaError rather than the clear client-side ExaError the sibling path gives.",
+  "suggestion": "Call _validate_search_params (or at least range-check num_results) before opening the stream to match search() behavior and the documented client-side validation."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-engine-async (lines 1-335)",
+  "line": 71,
+  "severity": "medium",
+  "category": "wrong-default/contract-drift",
+  "description": "The ThreadPoolExecutor is a process-lifetime singleton sized by the FIRST call to _pool/_fanout. A later _fanout(jobs, concurrency=N) with N > the initial size silently runs on the smaller pool, and max(8, ...) forces at least 8 in-flight jobs even when the caller explicitly passes a smaller concurrency (e.g. concurrency=2 to stay under a rate limit still submits with 8 running). The `concurrency` parameter therefore does not reliably bound parallelism.",
+  "suggestion": "Create/resize the pool when requested max_workers exceeds the current pool size (or document that the first call's concurrency is fixed for the process and honor a lower bound instead of max(8, ...))."
+ },
+ {
+  "where": "brave:brave-item-normalizers",
+  "line": 1540,
+  "severity": "medium",
+  "category": "crash-unguarded-conversion",
+  "description": "_video_item does int(v['views']) with only a None check; a non-integer view count (e.g. a formatted or float-like string) raises ValueError/TypeError and crashes the whole normalizer and thus the entire search() result for that mode. _qa_upvotes (line 1131) wraps the identical int() in try/except (TypeError, ValueError), so the codebase itself treats these count fields as potentially non-integer.",
+  "suggestion": "Wrap in try/except (TypeError, ValueError) and return None on failure, mirroring _qa_upvotes."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 479,
+  "severity": "medium",
+  "category": "error-class contract drift",
+  "description": "Missing key raises a bare RuntimeError, but the ExaAuthError docstring (lines 382-383) says it covers 'the API key is missing, invalid, or revoked' and references/usage.md tells users to catch ExaAuthError for auth problems. Callers following the docs and catching ExaAuthError will miss the missing-key case entirely.",
+  "suggestion": "Raise ExaAuthError (or document RuntimeError explicitly) for the not-configured case so the documented catch set works."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 469,
+  "severity": "medium",
+  "category": "wrong-data edge case",
+  "description": "_read_key_file's bare-token branch returns the first line with no '=', length >= 12 and no '/' as the key without checking it belongs to any name in `names`. In a key/env file whose first qualifying token is not the Exa key (e.g. a comment-free header token, a date-like string, or another service's token in secrets.env), the wrong value is silently returned as the API key, surfacing later only as a confusing 401.",
+  "suggestion": "For files that contain '='-style lines, require NAME= matches; only accept a bare token when the file contains no assignment lines at all (or name it <stem>.key explicitly)."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 1033,
+  "severity": "medium",
+  "category": "inconsistent-error-classification",
+  "description": "fast_fail treats VALIDATION as definitive only when `resp.status_code == 422 and code == 'VALIDATION'`, whereas _classify_response (line 857) classifies `code == 'VALIDATION'` as 'param' regardless of status. A 400/500 response whose body carries error.code='VALIDATION' therefore gets retried by _request (fast_fail False) and, after retries, raised with category='param' even though the real failure was a non-validation HTTP error \u2014 callers reacting on .category get the wrong verdict.",
+  "suggestion": "Align the two: have _request compute fast_fail via the same predicate as _classify_response, or drop the status guard in _classify_response."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 877,
+  "severity": "medium",
+  "category": "swallowed-error-fallback-gap",
+  "description": "In _classify_response, if the meta.errors normalisation comprehension raises (e.g. an entry whose 'loc' is a non-iterable non-string), `except Exception: pass` leaves `details` as the RAW unnormalized list (still set from line 859). The caller then reports un-normalised details and str()s the raw list in the 200-char message instead of falling back to the body text.",
+  "suggestion": "Set `details = None` (or a sentinel) in the except block so the fallback message uses the raw body."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 948,
+  "severity": "medium",
+  "category": "over-broad-heuristic",
+  "description": "_read_key_file accepts ANY line with length >= 12 and no '/' as the API key (`elif len(line) >= 12 and \"/\" not in line and line not in names: return line...`). For a file like ~/.prime/agent/keys/secrets.env that also defines BRAVE_API_KEY, the first 12+ char line that isn't KEY=VALUE for a Brave name (a comment without '#', a shebang, another service's bare token) is returned as the Brave key before the real BRAVE_API_KEY= line is ever seen \u2014 wrong credential silently used.",
+  "suggestion": "Only return bare-line values from files dedicated to this key (the stem.key / names.lower().key files); require KEY=VALUE form for generic .env files."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5914,
+  "severity": "medium",
+  "category": "wrong-results",
+  "description": "is_deprecated() derives its entire 'deprecated' verdict from deprecations(...).get('signals') (line 5915-5917). Because deprecations() is neutered by the broken \\b regex gate, signals is almost always empty, so is_deprecated() returns {'deprecated': False} even for genuinely deprecated packages. The freshness/news check (active_recent) does not feed the verdict, so the advertised deprecation-detection capability silently does not work.",
+  "suggestion": "Fix the regex gate in deprecations() (root cause); optionally add a direct deprecation-keyword search in is_deprecated() so the verdict is not single-sourced to one fragile classifier."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5459,
+  "severity": "medium",
+  "category": "dead-code-shadowing",
+  "description": "Five functions are defined twice in this range; the first definition of each is shadowed and never executed at runtime (module dict keeps the last binding). Pairs: pkg_releases 5459->5705, _dep_type 5507->5753, deprecations 5522->5768, snippet 5581->5826, code_lint_tips 5672->5870. The 5459/5507/5522/5581/5672 copies (plus the duplicated banner comment at 5450-5456 and 5696-5702) are dead. This is ~200 lines of duplicated code and a maintenance hazard (any future edit must be applied to two places).",
+  "suggestion": "Delete the first (shaded) copies at 5459, 5507, 5522, 5581, 5672 and the duplicate banner comment at 5450-5456, keeping only the effective 5705/5753/5768/5826/5870 block and the single banner."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-param-search",
+  "line": 1301,
+  "severity": "medium",
+  "category": "inconsistent-error-classification",
+  "description": "_mode_args raises a plain ValueError for an unknown mode, while every other validation in this section (and the module) raises ExaError. The ExaError docstring explicitly covers 'an invalid option combo is given', so a caller doing `except ExaError` around search()/run() will NOT catch a bad mode and will get an unhandled ValueError instead.",
+  "suggestion": "Raise ExaError (or a dedicated subclass) for unknown mode to match the rest of the module."
+ },
+ {
+  "where": "exa:exa-agent-runs (lines 1946-2610)",
+  "line": 2406,
+  "severity": "medium",
+  "category": "inconsistent error handling",
+  "description": "agent() early-returns a terminal run created already terminal (`if run.done: return run`) without running the `raise_on_failed` check at line 2425. If POST /agent/runs returns a run that is already `failed` (rare per the comment, but e.g. an instantly-failing continuation), the default `raise_on_failed=True` contract documented in the docstring (lines 2368-2369, 2375-2377) is violated: a failed AgentRun is silently returned instead of raising ExaError, unlike the poll path which does raise.",
+  "suggestion": "Move/apply the `if raise_on_failed and run.status == \"failed\": raise` check after the early return as well (check both the pre-poll and post-poll run objects)."
+ },
+ {
+  "where": "exa:exa-agent-runs (lines 1946-2610)",
+  "line": 2409,
+  "severity": "medium",
+  "category": "contract drift / wrong default",
+  "description": "The docstring says `timeout` is the 'Max total wall-clock seconds to wait for completion' (line 2366), but `deadline = time.time() + timeout` is computed AFTER the create call at line 2404, which itself runs with `timeout=min(timeout, 30)`; each in-flight poll GET at line 2412 also carries `timeout=min(timeout, 45)`. Total elapsed wall-clock can therefore exceed `timeout` by up to ~30s (create) + up to ~45s (one in-flight poll) for default timeout=120, and for small timeouts (e.g. timeout=10) the actual wait can be roughly double the promised bound.",
+  "suggestion": "Subtract elapsed time from the create call before computing the deadline (e.g. record t0 before POST and use `deadline = t0 + timeout`), and/or cap the per-poll request timeout by remaining time."
+ },
+ {
+  "where": "exa:exa-fetch-answer",
+  "line": 1939,
+  "severity": "medium",
+  "category": "wrong-return-shape",
+  "description": "answer() accepts and forwards an undocumented `stream` parameter (declared line 1900, not in the Args docstring) into body[\"stream\"] (line 1939), but routes through _request() which does resp.json(). When stream=True the /answer endpoint returns an SSE stream (as stream_answer at line 2642 confirms by posting stream=True and parsing SSE lines), so resp.json() raises an uncaught httpx/JSON decode error instead of returning an Answer. Passing stream=True to answer() crashes with an obscure error; the documented streaming path is stream_answer().",
+  "suggestion": "Either document/validate stream (raise a clear error directing the user to stream_answer when stream=True) or parse the SSE stream; simplest is to reject stream=True with an ExaError pointing to stream_answer()."
+ },
+ {
+  "where": "exa:exa-fetch-answer",
+  "line": 1824,
+  "severity": "medium",
+  "category": "contract-drift",
+  "description": "The legacy string-form guard checks only `not extras_links and max_age_hours is None` (line 1824), ignoring the other rich extras (extras_image_links, extras_rich_links, extras_rich_image_links, extras_code_blocks) and other rich options (text_verbosity, subpages, include_sections, highlights_max_characters). So a single-URL text fetch such as fetch(urls=[u], extras_code_blocks=5) still returns the plain '--- Title ---\\n<body>' string and silently discards the requested structured extras, contradicting the docstring promise that the string form is used only 'when no rich options are requested'.",
+  "suggestion": "Make the guard cover all rich options (any extras_*, text_verbosity, subpages>0, subpage_target, include_sections, etc.) so the structured list is returned whenever a rich option is actually requested."
+ },
+ {
+  "where": "exa:exa-fetch-answer",
+  "line": 1854,
+  "severity": "medium",
+  "category": "none-handling",
+  "description": "Answer.__init__ sets self.citations = raw.get(\"citations\", []) (line 1854). If the /answer API returns the key with a null value (\"citations\": null) the default is not applied, so citations becomes None; Answer.sources (line 1860), to_dict (line 1866), to_markdown (line 1879) and __repr__ (line 1891) then raise TypeError ('NoneType' not iterable / not a len()). The sibling stream_answer defensively normalizes with `obj.get(\"citations\") or []` (line 2672), confirming empty/absent citations is a real response shape, so Answer should use the same guard.",
+  "suggestion": "Use self.citations = raw.get(\"citations\") or [] to mirror stream_answer and avoid the None crash."
+ },
+ {
+  "where": "exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line": 3653,
+  "severity": "low",
+  "category": "dead parameter",
+  "description": "webset_eval_review declares timeout=45.0 but never uses it; the only API call is webset_items(webset_id, limit=limit, cursor=cursor), which does not accept a timeout. The param is silently ignored.",
+  "suggestion": "Remove the unused timeout param or plumb a timeout into webset_items/_request."
+ },
+ {
+  "where": "exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line": 3755,
+  "severity": "low",
+  "category": "dead parameter",
+  "description": "webset_recall declares timeout=45.0 but never uses it; its two API calls, webset_get(webset_id) and webset_search_status(webset_id, search_id), take no timeout argument. The param is silently ignored.",
+  "suggestion": "Remove the unused timeout param or add timeout support to the underlying helpers."
+ },
+ {
+  "where": "exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line": 3840,
+  "severity": "low",
+  "category": "edge-case premature return",
+  "description": "webset_wait's non-search_id branch returns immediately when 'not searches' (empty list). For a freshly created webset whose searches array is transiently empty, this returns before any search has been registered, so the wait effectively no-ops instead of polling to terminal.",
+  "suggestion": "Only treat an empty searches list as terminal when the webset status is paused/cancelled/failed; otherwise keep polling."
+ },
+ {
+  "where": "exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line": 3555,
+  "severity": "low",
+  "category": "unbounded loop / growth",
+  "description": "webset_items_all uses a 'while True' that keeps appending to 'items' and advancing cursor until hasMore is false. There is no duplicate-page / progress guard: if the API ever repeats a cursor or keeps hasMore true, the loop is infinite and the list grows without bound. Same class of risk applies to webset_snapshot which holds the full list in memory.",
+  "suggestion": "Add a safety bound (max pages, or stop when a nextCursor repeats) to prevent infinite pagination."
+ },
+ {
+  "where": "exa.websets:exa-websets (lines 3308-3921): webset_* lifecycle/items/eval, enrichment_*, plus team_info",
+  "line": 3893,
+  "severity": "low",
+  "category": "inconsistent field handling",
+  "description": "In enrichment_update (and webset_update/webset_enrich), description/format/options are guarded by truthiness ('if description:') while metadata uses 'is not None'. A caller passing empty string '' or None to clear description/format silently omits it from the PATCH body, so it cannot be cleared, unlike metadata. Minor and likely intentional, but inconsistent within the same call.",
+  "suggestion": "If clearing fields is a supported use case, gate all fields on 'is not None' rather than truthiness."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3092,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "Module constants _CADENCE and _BEHAVIOR (lines 3092-3093) are defined but never referenced anywhere in the file; wmonitor_create/wmonitor_update use the literals 'cadence'/'behavior' inline.",
+  "suggestion": "Remove them or use them in wmonitor_create/wmonitor_update."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3049,
+  "severity": "low",
+  "category": "error-classification",
+  "description": "monitor_wait treats 'failed'/'cancelled' as terminal success and just returns the run dict; jobs.md explicitly notes 'a terminal failed/cancelled state is not success' but the API gives callers no signal beyond manually checking status (contrast agent() which raises via raise_on_failed). The timeout error also renders as 'monitor run None did not finish' when run_id is None (line 3056).",
+  "suggestion": "Return or raise distinctly for failed/cancelled, or document that callers must inspect run['status']; use monitor_id in the timeout message when run_id is None."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 2955,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "monitor_create does a local `import time` that is both redundant (time is imported at module scope, line 12) and unused in the function body.",
+  "suggestion": "Delete the local import."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 2947,
+  "severity": "low",
+  "category": "doc-drift",
+  "description": "monitor_create docstring says 'num_results: result count per run (default API 10)' but the client default is num_results=5 (line 2923), so every call that omits it sends 5, not the API default.",
+  "suggestion": "Fix the docstring to state the client default of 5."
+ },
+ {
+  "where": "exa (src/exa/__init__.py):exa-monitors (lines 2921-3307)",
+  "line": 3175,
+  "severity": "low",
+  "category": "silent-default-override",
+  "description": "wmonitor_create computes timeout=min(timeout, 30) with default timeout=45.0, so the effective HTTP timeout is always 30s and any caller-supplied value above 30 is silently reduced; the docstring does not document this cap.",
+  "suggestion": "Pass timeout through unchanged or document the 30s cap."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 857,
+  "severity": "low",
+  "category": "swallowed-error",
+  "description": "entity_search() wraps entity_summary() in 'except Exception: continue' with no log; malformed entity records (e.g. a non-dict entry in entities[]) are dropped silently, so the roster can quietly lose entities and entity_count is under-reported with no trace.",
+  "suggestion": "Narrow to (AttributeError, TypeError), or count skipped records and surface it in the result dict."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 863,
+  "severity": "low",
+  "category": "wrong-counting",
+  "description": "_occurrences counts entity records, not distinct source pages: if one result carries two records that share a dedupe key (no library id, same name+type), a single page inflates the count to 2, contradicting the docstrings 'how many distinct result pages mentioned each entity' / 'number of source pages that surfaced it'.",
+  "suggestion": "Count per-result distinctness (e.g. add one per Result that contains the key) or reword the docstring to 'occurrences'."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 919,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "entity_schema() discovery check 'if typ in (\"unknown\", \"\") and not props:' - the '' branch is unreachable: entity_type() always returns at least 'unknown' (str(t or 'unknown')), never an empty string.",
+  "suggestion": "Simplify to 'if typ == \"unknown\" and not props:'."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 814,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "_ENTITY_TYPES is defined but never referenced anywhere in the module (grep-verified); it is also not part of __all__.",
+  "suggestion": "Use it (e.g. as the set of known kinds in entity_schema) or delete it."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 691,
+  "severity": "low",
+  "category": "wrong-data",
+  "description": "Result.domain (line 691) and Result.hostname (line 696) fall back to self.id when url is empty; Exa result ids are opaque hex strings, not URLs, so _domain_of() returns the whole id as a fake 'domain' (e.g. 'a3f9...') that then pollutes SearchResults.domains()/top_domains() and top_terms() domain_clusters.",
+  "suggestion": "Return '' when url is missing instead of feeding the id through _domain_of."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 1129,
+  "severity": "low",
+  "category": "edge-case",
+  "description": "SearchResults.to_agent() uses 'if cost:' so a legitimate cost of 0.0 (free/zero-cost request) is omitted from the output, while __repr__ and total_cost() treat 0.0 as a real value - inconsistent handling.",
+  "suggestion": "Use 'if cost is not None:'."
+ },
+ {
+  "where": "exa:exa-result-entities (lines 554-1260: Result + entity helpers + SearchResults)",
+  "line": 592,
+  "severity": "low",
+  "category": "edge-case",
+  "description": "Result.to_agent() only date-truncates when the time part startswith '00:00:00'; midnight timestamps with a shorter or fractional time (e.g. '2024-01-01T00:00' or '2024-01-01T00:00.000Z') keep the time part, violating the docstring promise 'Date keeps time when it is not midnight'.",
+  "suggestion": "Compare the parsed time portion (e.g. hour/minute/second all zero) rather than string prefix."
+ },
+ {
+  "where": "exa/__init__.py:exa-streaming",
+  "line": 2867,
+  "severity": "low",
+  "category": "robustness",
+  "description": "stream_search (and stream_answer at 2659) parse exactly one JSON object per 'data:' SSE line and, on json failure, `continue` (drop the frame). A valid SSE event whose data value spans multiple 'data:' lines (RFC-allowed) is silently discarded, so a large results/citations frame could vanish. The sibling stream_answer_source handles this correctly with a frame_buffer (2766-2783).",
+  "suggestion": "Buffer consecutive 'data:' lines and join with '\\n' before json.loads, as stream_answer_source does, rather than parsing line-by-line."
+ },
+ {
+  "where": "exa/__init__.py:exa-streaming",
+  "line": 2858,
+  "severity": "low",
+  "category": "contract-drift",
+  "description": "stream_search's Yields docstring (2823-2824) lists the final dict as {results, output, grounding, citations, text, request_id}, but the actual final yield (2907-2915) also includes search_time_ms (captured at 2858/2880). The key is undocumented, so a consumer iterating keys or building a schema off the doc misses it.",
+  "suggestion": "Add 'search_time_ms' to the documented final-dict shape."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-engine-async (lines 1-335)",
+  "line": 72,
+  "severity": "low",
+  "category": "exception-handling",
+  "description": "Only `except Exception` is caught around fut.result() (line 77); a BaseException raised by a job (SystemExit, KeyboardInterrupt) propagates out of _fanout, aborting collection of the remaining already-submitted futures and returning no result at all. Also, if a thunk is not callable, pool.submit raises TypeError mid-loop after earlier futures are already queued, leaving them orphaned and no partial results.",
+  "suggestion": "Catch BaseException per future (or validate thunks up front and catch submit errors per job) so one bad job cannot discard the whole fanout."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-engine-async (lines 1-335)",
+  "line": 34,
+  "severity": "low",
+  "category": "thread-safety",
+  "description": "_http (lines 33-35) and _pool (lines 44-46) use unsynchronized check-then-set lazy initialization of the module globals _CLIENT/_WORKERS; two threads racing on first use can each construct a client/pool, and the loser is abandoned (its connections never closed promptly). The _http docstring claims the client is thread-safe but the creation path itself is not atomic.",
+  "suggestion": "Guard creation with a module-level lock (or accept the benign race explicitly in the docstring)."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-engine-async (lines 1-335)",
+  "line": 53,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "resp.headers is httpx's case-insensitive headers dict, so resp.headers.get(\"retry-after\") (second operand of the `or`) can never find a header the first .get(\"Retry-After\") missed; the second lookup is a no-op fallback that never adds anything.",
+  "suggestion": "Drop the redundant second .get(\"retry-after\") call."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-engine-async (lines 1-335)",
+  "line": 129,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "`import functools as _functools` is never referenced anywhere in the module; _make_async (line 302) and _apply_async_to (line 323) re-import functools inside the function body instead of using the module-level alias.",
+  "suggestion": "Delete the unused module-level alias (or use it in the two functions)."
+ },
+ {
+  "where": "brave:brave-item-normalizers",
+  "line": 1305,
+  "severity": "low",
+  "category": "inconsistent-type-guarding",
+  "description": "Several normalizers do x = item.get(field) or {} and then call .get() on it with only a truthiness guard, so a truthy non-dict value (e.g. a string) causes AttributeError. _web_item: free_flag = article.get(...) at line 1305 (every other article access at lines 1285/1287/1335 is isinstance-guarded), org.get('name') at line 1349, thumb.get at lines 1353-1355, profile.get at lines 1358-1361. Same pattern in _news_item line 1482 (prof.get), _discussion_item lines 1498/1505/1511 (d.get on item.data), and _recipe_item/_product_item/_movie_item thumbnail access (lines 1203-1204, 1240-1241, 1278-1279).",
+  "suggestion": "Apply the file's standard isinstance(x, dict) guard (as done for creative_work, embedded_video, and opening_hours at line 1607/1619) before calling .get."
+ },
+ {
+  "where": "brave:brave-item-normalizers",
+  "line": 1684,
+  "severity": "low",
+  "category": "crash-unguarded-assumption",
+  "description": "_infobox does b = ib[0] without checking that the first infobox result is a dict; a non-dict entry makes b.get('title') at line 1689 raise AttributeError. Note _loc_lines (line 1680) filters its items with isinstance(i, dict) but _infobox does not; a non-dict data['infobox'] value also crashes at line 1684 on .get('results').",
+  "suggestion": "Guard with isinstance(ib[0], dict) (return None otherwise) and isinstance(data.get('infobox'), dict)."
+ },
+ {
+  "where": "brave:brave-item-normalizers",
+  "line": 1695,
+  "severity": "low",
+  "category": "contract-drift",
+  "description": "_infobox silently truncates long_desc to 800 characters (_clean_html(...)[:800]). The skill docs (api.md 'Return shapes', verticals.md) describe the full view as carrying normalized detailed fields without mentioning this cap, so consumers see 'long_desc' that may be cut mid-sentence with no indicator that it was truncated.",
+  "suggestion": "Either document the 800-char cap in SKILL.md/references, or add a 'long_desc_truncated' flag to the returned dict."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 437,
+  "severity": "low",
+  "category": "swallowed error",
+  "description": "Bare 'except Exception: pass' around the dotenv import + value loop swallows all errors (unreadable/permission-denied dotenv files, parser bugs) and falls through to key-file lookup with no trace; the fallback chain then returns '' or a wrong-source key without indicating the dotenv step failed.",
+  "suggestion": "Catch only ImportError for the missing optional dependency; let per-file read errors raise or at least be distinguishable."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 510,
+  "severity": "low",
+  "category": "unguarded decode on success",
+  "description": "'return resp.json()' on any status < 400 is unguarded: a 2xx response with an empty or non-JSON body raises ValueError/json.JSONDecodeError out of _request, which the module's documented error contract (Exa* subclasses from ExaError) does not cover.",
+  "suggestion": "Wrap resp.json() in try/except and raise a wrapped ExaServerError with the status code and a snippet of resp.text."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 552,
+  "severity": "low",
+  "category": "dead code / unused variable",
+  "description": "Lines 552-553 ('# unreachable' / final raise) are unreachable for any _retries >= 0: every loop path either returns (<400) or raises. Additionally 'last_resp' (assigned lines 504 and 511) is never read, and 'detail' would be None in the dead fallback message.",
+  "suggestion": "Remove the unreachable fallback and the unused last_resp assignment, or convert _retries to assert max(0, _retries) and use last_resp for the diagnostic."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 502,
+  "severity": "low",
+  "category": "code smell",
+  "description": "Redundant 'import time' inside _request; time is already imported at module level (line 12) and used by _retry_after_seconds at module scope.",
+  "suggestion": "Drop the local import."
+ },
+ {
+  "where": "exa/__init__.py:exa-const-errors-auth (lines 336-553: constants, error classes, API-key lookup, _request)",
+  "line": 339,
+  "severity": "low",
+  "category": "version drift",
+  "description": "__version__ = '0.19.0' is stale: pyproject.toml declares version = '0.20.0' (and the package was imported as v0.20.0 in commit d5e521f), so programmatic version checks disagree with the installed/packaged version.",
+  "suggestion": "Bump to '0.20.0' or read the version from importlib.metadata."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 857,
+  "severity": "low",
+  "category": "operator-precedence",
+  "description": "`elif code == \"VALIDATION\" or status == 422 and meta.get(\"errors\"):` parses as `code == 'VALIDATION' or (status == 422 and meta.get('errors'))` due to precedence; works by luck but any 4xx/5xx body containing error.code='VALIDATION' is classified 'param' with meta.errors possibly empty/None, even though the transport error is the real issue. Add parentheses for clarity.",
+  "suggestion": "elif code == \"VALIDATION\" or (status == 422 and meta.get(\"errors\")):"
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 916,
+  "severity": "low",
+  "category": "overly-broad-except",
+  "description": "`try: from dotenv import dotenv_values ... except Exception: pass` wraps the entire dotenv loop, but only an ImportError can occur before the loop body; any unexpected error from dotenv_values() (corrupt/oversized .env) is silently swallowed, so a misconfigured dotenv file yields no signal and the search later fails with the generic 'no API key' message.",
+  "suggestion": "Catch only ImportError around the import; let dotenv_values errors surface or log them."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 810,
+  "severity": "low",
+  "category": "dead-categories-contract-drift",
+  "description": "BraveError docstring lists `timeout` and `http_422` as valid categories, but grep confirms neither string is ever assigned anywhere in the module. Callers checking `category == 'timeout'` (or distinguishing http_422 from param) can never match; timeouts surface as category='network' instead.",
+  "suggestion": "Either assign these categories where timeouts/422s are handled, or remove them from the docstring."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 830,
+  "severity": "low",
+  "category": "unused-parameter",
+  "description": "The `timeout` parameter of _classify_response is never referenced in the body; it is threaded from _request (lines 1046/1047) purely for symmetry.",
+  "suggestion": "Drop the parameter or use it in the message (e.g. note the timeout value on network-related classifications)."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 880,
+  "severity": "low",
+  "category": "potential-secret-leak",
+  "description": "The error message embeds `str(details if details else body)[:200]` \u2014 up to 200 chars of the raw response body (or raw details list repr) into an exception message. If a response body ever echoes the X-Subscription-Token or other credential material, it would leak into logs/agent transcripts.",
+  "suggestion": "Limit the embedded body to a fixed set of safe fields (error.code/error.detail) rather than raw body text."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 1054,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "_fallback_ok is a trivial `return bool(fallback)` stub invoked only from _request line 1042 where the enclosing `if fallback and ...` already guarantees truthiness; it adds an indirection with no decision.",
+  "suggestion": "Inline the check (or remove both) and let _request call _run_fallback directly."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 964,
+  "severity": "low",
+  "category": "shared-state-mutation",
+  "description": "_get_api_key backfills the resolved key into os.environ for ALL _API_KEY_NAMES via setdefault \u2014 a side effect beyond the documented lookup, mutating process-wide state for sibling threads/imports and non-thread-safe with concurrent first calls (two threads can both miss the cache and race the setdefault; harmless result-wise since values agree, but the env mutation is observable).",
+  "suggestion": "Document the env backfill explicitly or drop it; guard the cache read/write if true concurrency on first use is expected."
+ },
+ {
+  "where": "brave/__init__.py:brave-clean-errors-auth (lines 781-1090; the LOC_HEADERS dict literal closes at line 782 but its def is at line 772, attributed to the prior section)",
+  "line": 800,
+  "severity": "low",
+  "category": "ineffective-cleaning",
+  "description": "In _clean_html, line 796's html.unescape already converts '&nbsp;' to U+00A0, so the `re.sub(r\"&nbsp;\", \" \", t)` at line 800 can never match; and line 803 `re.sub(r\"\\s*\\n\\s*\", \"\\n\", ...)` is a no-op that keeps the space on each side of a newline, so 'a\\n   b' collapses to 'a \\n b' rather than a clean line break (minor cosmetic noise in readable output).",
+  "suggestion": "Delete line 800 and use `re.sub(r\"[ \\t]*\\n[ \\t]*\", \"\\n\", t)` if strict line breaks are wanted."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5777,
+  "severity": "low",
+  "category": "contract-drift",
+  "description": "deprecations() docstring promises signals entries of shape {url,title,type,snippet}, but the code only ever builds {url, title, type} \u2014 'snippet' is never populated. Additionally, markdown line 5821 does s.get('url') which is None for the answer-derived signal (url=None at 5801) and null citation urls, so the rendered line prints a literal 'None'.",
+  "suggestion": "Either add a 'snippet' field (e.g. truncated title/url) to each signal dict or correct the docstring; guard the None url in the markdown line (use s.get('url') or '')."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5634,
+  "severity": "low",
+  "category": "doc-mismatch",
+  "description": "api_reference() docstring states 'max_characters: max text to keep (default 16000)' but the signature default is 9000 (line 5625). The actual capped text passed to fetch() is 9000.",
+  "suggestion": "Correct the docstring default to 9000 (or change the signature default to 16000 if that was intended)."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5803,
+  "severity": "low",
+  "category": "deprecated-api",
+  "description": "deprecations() uses datetime.utcnow() (both copies: 5558 and 5803), which is deprecated in Python 3.12+ (emits DeprecationWarning). The value is only used for a date-string window, so it is not a correctness bug, but it is inconsistent with the rest of the module which uses datetime.now(timezone.utc) (e.g. 3581, 4347).",
+  "suggestion": "Replace datetime.utcnow() with datetime.now(timezone.utc) to match the module's other date handling."
+ },
+ {
+  "where": "exa.__init__:exa-tail-dupes (lines 5351-5988)",
+  "line": 5436,
+  "severity": "low",
+  "category": "swallowed-errors",
+  "description": "hf_discussions() wraps each of its two search() calls in 'except Exception: pass' (5430-5437), silently swallowing all errors including missing/invalid API key or 4xx/5xx; a fully failed call returns an empty threads list indistinguishable from 'no results'. Same silent-swallow pattern in pkg_releases (news sweep) and both deprecations() call blocks.",
+  "suggestion": "At minimum narrow to ExaError and/or log the exception; returning empty-on-error is defensible but currently hides auth/config failures from the caller."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-param-search",
+  "line": 1544,
+  "severity": "low",
+  "category": "contract-drift",
+  "description": "search(stream=True) sets body['stream']=True, but the transport _request() always parses a single JSON body via resp.json() (line 510) and never consumes an SSE stream. The parameter is therefore a no-op that cannot deliver a stream; the real streaming path is the separate stream_search() at line 2807. Advertsing `stream` on search() is misleading.",
+  "suggestion": "Remove the `stream` parameter from search() or route it to the streaming transport; it currently cannot work."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-param-search",
+  "line": 1350,
+  "severity": "low",
+  "category": "silently-dropped-param",
+  "description": "In _contents_block, include_html_tags, include_sections and exclude_sections are emitted only inside the text sub-dict (lines 1360-1365), which is only reached when `with_text or max_characters or text_verbosity` is truthy. If a caller sets only e.g. include_sections=[...] with no text option, the entire block is skipped and the parameter is silently ignored with no error.",
+  "suggestion": "Either reject these section/HTML options when no text is requested, or at least warn; don't silently drop them."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-param-search",
+  "line": 1451,
+  "severity": "low",
+  "category": "type-annotation-mismatch",
+  "description": "livecrawl is annotated Optional[str] in search() (and defaults to False in _contents_block at line 1340), but the Exa contents field is a boolean and is emitted verbatim via `if livecrawl: c['livecrawl'] = livecrawl` (line 1405). Passing a string would send a string where the API expects a bool.",
+  "suggestion": "Type it as Optional[bool] and normalize to bool before emitting."
+ },
+ {
+  "where": "exa (exa/src/exa/__init__.py):exa-param-search",
+  "line": 1283,
+  "severity": "low",
+  "category": "silent-result-change",
+  "description": "_category_canon prints a warning to stdout and returns None for an unsupported category, so the user's requested category filter is silently not applied and search() runs without it. For a library this means stdout output on a data path and results that differ from what was requested, with no exception.",
+  "suggestion": "Consider raising or returning a sentinel that lets search() decide; stdout-print from a helper is a code smell and the filter drop is easy to miss."
+ },
+ {
+  "where": "exa:exa-agent-runs (lines 1946-2610)",
+  "line": 2317,
+  "severity": "low",
+  "category": "crash on malformed input (AttributeError)",
+  "description": "agent_trace() wraps json.loads of a string event `data` in `try/except: pass` (lines 2317-2321), so if the API ever returns a string payload that is not valid JSON the field stays a str. AgentTrace._parse then calls `data.get(...)` on that str (e.g. line 2129 `item = data.get(\"item\") or {}`), raising AttributeError 'str' object has no attribute 'get' and crashing agent_trace entirely.",
+  "suggestion": "On parse failure, drop the event or set e[\"data\"] = {} instead of leaving the raw string, or make AgentTrace._parse tolerate non-dict `data` (guard with isinstance(d, dict))."
+ },
+ {
+  "where": "exa:exa-agent-runs (lines 1946-2610)",
+  "line": 1982,
+  "severity": "low",
+  "category": "None handling crash (TypeError)",
+  "description": "AgentRun.citations iterates `for c in g.get(\"citations\", [])`; the default only covers a missing key. If the API sends a grounding group with `\"citations\": null`, iterating None raises TypeError. The sibling code in this file consistently defends with `or []` (e.g. AgentRun.__init__ line 1967, AgentTrace._parse lines 2129/2142), so a null here is handled less defensively than the rest of the module.",
+  "suggestion": "Use `for c in (g.get(\"citations\") or []):`."
+ },
+ {
+  "where": "exa:exa-imports-events-research",
+  "line": 3940,
+  "severity": "low",
+  "category": "off-by-one",
+  "description": "`nrows = sum(1 for _ in fh)` counts every line of the CSV including the header row, and this is sent as the `count` body field (line 3944). If the API's `count` is expected to be the number of entity records, it is off by one (and by more if the file has a trailing empty line).",
+  "suggestion": "Subtract the header line (and any blank lines) so `count` reflects record count, e.g. count data rows only."
+ },
+ {
+  "where": "exa:exa-imports-events-research",
+  "line": 4205,
+  "severity": "low",
+  "category": "inconsistent-handling",
+  "description": "In the dedupe path, results lacking both url and id are silently dropped (`u = _canon(...)`; `if not u: continue`), so such results never appear in the merged SearchResults. merge_searches (line 4277-4281) preserves them in `extra_results` instead. The two functions handle the same no-URL case inconsistently.",
+  "suggestion": "Preserve no-URL results (append after the URL-deduped ones, as merge_searches does) rather than dropping them."
+ },
+ {
+  "where": "exa:exa-imports-events-research",
+  "line": 4255,
+  "severity": "low",
+  "category": "dead-code",
+  "description": "`return search_results[0] if isinstance(search_results[0], SearchResults) else search_results[0]` has two identical branches, so the ternary is a no-op. Also the documented 'returned unchanged (fast path)' for a single input only applies when dedupe=True; with dedupe=False and one input it falls through to a full merge that re-indexes and returns a new SearchResults.",
+  "suggestion": "Simplify to `return search_results[0]` and clarify the docstring that the unchanged fast path is only for dedupe=True."
+ },
+ {
+  "where": "exa:exa-imports-events-research",
+  "line": 4075,
+  "severity": "low",
+  "category": "inconsistent-params",
+  "description": "event_list sends the same event-type filter twice: a singular `type` param (line 4068) AND a plural `types` list into which event_type is also re-appended (lines 4072-4074). When event_type is given, its value is thus present in both query params, which is redundant and risks the API double-applying or rejecting the combined filter.",
+  "suggestion": "Pick one representation: either set `type` only when event_type is the sole filter, or rely solely on `types` and drop the singular `type` param."
+ },
+ {
+  "where": "exa:exa-fetch-answer",
+  "line": 1877,
+  "severity": "low",
+  "category": "contract-drift",
+  "description": "Answer.to_markdown renders the answer body with str(self.answer) (line 1877). When output_schema is supplied, self.answer is a dict, and str() emits Python repr (single-quoted, non-JSON) rather than valid JSON, so the '## Answer' block is not a clean structured payload.",
+  "suggestion": "Serialize a dict answer with json.dumps(answer, indent=2, ensure_ascii=False) instead of str() when the answer is not a string."
+ }
+]

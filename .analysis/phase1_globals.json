@@ -1,0 +1,189 @@
+{
+ "lenses": [
+  {
+   "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+   "summary": "The two modules share large, near-identical plumbing copied verbatim or with only trivial renames. Verified by line-range diffs: (1) a ~200-line dual sync/async wrapper set (exa 133-334, brave 522-723) that is BYTE-IDENTICAL, including the module-tail `_apply_async_to(globals())` hook (exa:5988, brave:7213); (2) a ~80-line API-key lookup trio `_seek_api_key`/`_read_key_file`/`_get_api_key` (exa 411-488, brave 890-967) that is BYTE-IDENTICAL (only the `_API_KEY_NAMES`/`_API_LABEL` constants differ, which is the intended parameterization); (3) the HTTP-engine core `_http/_pool/_retry_after_seconds/_fanout` plus the module globals `_ENGINE_LIMITS/_CLIENT/_WORKERS` (exa 26-79, brave 23-80) that differ only by trivial renames (`follow_redirects=True/False`, `thread_name_prefix=\"exa\"/\"brave\"`, docstrings). These three are strong candidates for lifting into an internal `_common` module; the only intended differences are the redirect flag, the worker-name prefix, and the key-name/label constants, all of which would need to be parameterized. By contrast, the domain/url helpers are DIVERGENT (exa `_domain_of` is a registrable-domain label-slicer; brave `_url_host` is a hostname+www-strip) and should NOT be merged. Also note `_request` is NOT near-identical (exa POST + x-api-key + ExaError taxonomy; brave GET + X-Subscription-Token + BraveError taxonomy + fallback endpoints) and shares only the engine primitives, so a `_common` lift should stop at the engine. exa additionally has `_poll_until` (82-100) with no brave counterpart. Overall: high duplication ratio in the shared plumbing; a `_common` module would remove roughly 280+ lines of copy-paste and eliminate the drift risk that a fix in one copy never reaches the other.",
+   "findings": [
+    {
+     "module": "both",
+     "severity": "medium",
+     "category": "duplication",
+     "line": 133,
+     "description": "The entire dual sync/async wrapper set is byte-identical across the two modules: exa/__init__.py lines 133-334 vs brave/__init__.py lines 522-723. This includes _identity_await, _AsyncDict, _AsyncStr, _AsyncList, _AsyncInt, _AsyncFloat, _AsyncBool, _wrap_result, _AsyncScalar, _make_async, _apply_async_to (~200 lines). A `diff` of the two ranges is empty (IDENTICAL). Both also carry the identical module-tail activation call `_apply_async_to(globals())` (exa:5988, brave:7213). Because the copy is verbatim, any bug or fix applied to one copy will silently diverge from the other \u2014 the highest-value target for an internal _common module.",
+     "evidence": "exa 133-137: 'def _identity_await(self): ... if False: # pragma: no cover - makes this a generator (required by await)\\n        yield\\n    return self' ; exa 140-147 class _AsyncDict(dict) with __await__ returning dict(self) ; exa 216 'def _wrap_result(value):' ; exa 311 'def _apply_async_to(module_dict):' // brave 522-526 identical _identity_await ; brave 529 class _AsyncDict ; brave 605 _wrap_result ; brave 700 _apply_async_to. diff <(sed -n '133,334p' exa/...) <(sed -n '522,723p' brave/...) -> IDENTICAL.",
+     "suggestion": "Move the whole block into a shared internal module (e.g. search_skills/_common/awaitable.py) and have both exa and brave import it; keep each module's trailing `_apply_async_to(globals())` call pointing at the shared function."
+    },
+    {
+     "module": "both",
+     "severity": "medium",
+     "category": "duplication",
+     "line": 411,
+     "description": "The API-key lookup trio is byte-identical: exa/__init__.py lines 411-488 vs brave/__init__.py lines 890-967 (_seek_api_key, _read_key_file, _get_api_key). `diff` of each function range is empty (IDENTICAL). The only differences are the module constants that parameterize it: exa has `_API_KEY_NAMES = ['EXA_API_KEY']`, `_API_LABEL = \"exa\"` (lines 407-408); brave has `_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']`, `_API_LABEL = \"brave\"` (lines 886-887); both define `_API_KEY_CACHE = {}` (exa:409, brave:888). This is credential-resolution logic duplicated across both, so a behavior change or a path/env bug in one copy will not propagate to the other.",
+     "evidence": "Both define verbatim: 'def _seek_api_key(names=None):\\n    from pathlib import Path\\n    names = names or _API_KEY_NAMES\\n    for n in names:\\n        v = os.environ.get(n, \"\")\\n        if v and not v.startswith(\"${\"):\\n            return v ... stem = names[0].split(\"_\")[0].lower() ... return \"\"' ; 'def _read_key_file(path, names): ... if k.strip() in names and v.strip(): return v.strip().strip(\\\"'\\\"\\\\\\\"\\\")' ; 'def _get_api_key(): label = _API_LABEL ... _API_KEY_CACHE[label] = key; return key'. diff of 411-451/890-930, 453-471/932-950, 473-488/952-967 all -> IDENTICAL.",
+     "suggestion": "Lift the trio into _common with an injected (key_names, label) or a per-skill config object; each module passes its own _API_KEY_NAMES/_API_LABEL. Preserve the per-label _API_KEY_CACHE dict."
+    },
+    {
+     "module": "both",
+     "severity": "low",
+     "category": "duplication",
+     "line": 26,
+     "description": "The HTTP-engine core is duplicated with only trivial renames: module globals _ENGINE_LIMITS/_CLIENT/_WORKERS plus _http, _pool, _retry_after_seconds, _fanout. exa 26-79 vs brave 23-80. Bodies are verbatim except: `_http` uses `follow_redirects=True` in exa vs `follow_redirects=False` in brave; `_pool` uses `thread_name_prefix=\"exa\"` vs `\"brave\"`; `_retry_after_seconds` and `_fanout` differ only in docstring text. Note the intended `follow_redirects` difference means a _common _http must be parameterized, not shared as-is. exa additionally defines `_poll_until` (82-100) which has no brave counterpart, so it is exa-specific. These are small, low-risk duplicates.",
+     "evidence": "_http: exa line 37 'follow_redirects=True' vs brave line 33 'follow_redirects=False' (rest of body identical). _pool: exa 46 'ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"exa\")' vs brave 42 'thread_name_prefix=\"brave\"'. _retry_after_seconds diff shows only an added docstring line in brave. _fanout diff shows only differing docstrings; the submit/collect loop (pool.submit / fut.result / try-except append) is identical.",
+     "suggestion": "Move _ENGINE_LIMITS/_CLIENT/_WORKERS/_http/_pool/_retry_after_seconds/_fanout into _common, making _http take a follow_redirects flag and _pool take a thread_name_prefix. Leave exa's _poll_until in exa (no counterpart in brave)."
+    },
+    {
+     "module": "both",
+     "severity": "low",
+     "category": "duplication",
+     "line": 709,
+     "description": "Domain/url helpers are CONCEPTUALLY overlapping but DIVERGENT, not near-identical \u2014 flagging so a refactor does NOT wrongly merge them. exa `_domain_of` (709-724) computes a registrable domain by stripping scheme/www and slicing the last two labels, and a `hostname` property (693-700) uses urllib.parse.urlparse(...).hostname. brave `_url_host` (114-122) also uses urlparse(...).hostname but lowercases and strips a leading 'www.', and brave `_host` (1081-1084) just reads meta_url.hostname. Same problem space (extract host from a URL), different algorithms and outputs (registrable-domain vs full hostname). The overlap is only the shared `urlparse().hostname` idiom.",
+     "evidence": "exa 716 'host = url.split(\"//\", 1)[-1].split(\"/\", 1)[0] ... return \".\".join(labels[-2:])' (registrable domain) ; exa 698 'urllib.parse.urlparse(u if \"://\" in u else \"https://\" + u).hostname' ; brave 119 'host = (urlparse(str(url)).hostname or \"\").lower()' ; brave 122 'return host[4:] if host.startswith(\"www.\") else host'. No shared function; only the urlparse.hostname idiom matches.",
+     "suggestion": "Do not fold these into a single shared helper without first unifying the contract (registrable-domain vs host-without-www). If desired, share only a small `urlparse hostname` primitive and keep each module's post-processing separate."
+    }
+   ]
+  },
+  {
+   "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+   "findings": [
+    {
+     "module": "exa",
+     "line": 5522,
+     "severity": "medium",
+     "category": "duplicate-definition-drift",
+     "description": "deprecations is defined twice (line 5522 and line 5768) inside two pasted copies of the 'Round-18' block (headers at lines 5451 and 5697). LIVE definition is line 5768 (last def wins). The two bodies are NOT identical - they have already drifted: the shadowed copy at 5522 has the extra comment '# the model answer itself flags deprecation - record as a signal.' and names the date variable 'start' ('start = end - timedelta(days=max(1, days))' / 'start_published_date=start.strftime(\"%Y-%m-%d\")'), while the live copy at 5768 omits the comment and renames the variable 'st' ('st = end - timedelta(days=max(1, days))' / 'start_published_date=st.strftime(\"%Y-%m-%d\")'). Behavior is functionally equivalent today, but the divergence proves the two copies are maintained independently: an edit to the shadowed copy at 5522 would be silently inert. deprecations is in __all__ (public API).",
+     "evidence": "5522:def deprecations(query: str, *, days=30, timeout=90.0):\n...5553:        start = end - timedelta(days=max(1, days))\n...5556:                    start_published_date=start.strftime(\"%Y-%m-%d\"),\n5768:def deprecations(query: str, *, days=30, timeout=90.0):\n...5798:        st = end - timedelta(days=max(1, days))\n...5801:                    start_published_date=st.strftime(\"%Y-%m-%d\"),",
+     "suggestion": "Delete the entire first shadowed Round-18 block (lines ~5451-5696, which contains the shadowed pkg_releases/_dep_type/deprecations/snippet/code_lint_tips), keeping the live definitions at 5705/5753/5768/5826/5870. The first block's unique function api_reference (line 5625) must be preserved."
+    },
+    {
+     "module": "exa",
+     "line": 5459,
+     "severity": "low",
+     "category": "duplicate-definition",
+     "description": "pkg_releases is defined twice: line 5459 (shadowed, dead) and line 5705 (LIVE, last def wins). The two bodies are byte-identical (same source, sha256 f357589e09efd171f6302167df4d51c1cbb6d7c9bbc92fed18314d42f07c9991), so there is no behavioral difference - pure dead code (~46 lines). pkg_releases is a public name in __all__; callers always get the copy at 5705.",
+     "evidence": "5459:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):\n5705:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):",
+     "suggestion": "Remove the shadowed copy at line 5459 as part of deleting the duplicated Round-18 block."
+    },
+    {
+     "module": "exa",
+     "line": 5507,
+     "severity": "low",
+     "category": "duplicate-definition",
+     "description": "Private helper _dep_type is defined twice: line 5507 (shadowed, dead) and line 5753 (LIVE, last def wins). Bodies are byte-identical (sha256 379eae056a7ef43c2a3819366e26a9d6f454134c883abc493b4a45a90d307e12). Not in __all__ (private); the live copy at 5753 is the one called by the live deprecations at 5768. Pure dead code (~13 lines).",
+     "evidence": "5507:def _dep_type(blob):\n5753:def _dep_type(blob):",
+     "suggestion": "Remove the shadowed copy at line 5507."
+    },
+    {
+     "module": "exa",
+     "line": 5581,
+     "severity": "low",
+     "category": "duplicate-definition",
+     "description": "snippet is defined twice: line 5581 (shadowed, dead) and line 5826 (LIVE, last def wins). Bodies are byte-identical (sha256 82ba6e720f225f7ebec5ebbd8bf34f46313c9624a30f16f1ef930e3a416ef128). snippet is public (in __all__); callers always get the copy at 5826. Pure dead code (~42 lines).",
+     "evidence": "5581:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):\n5826:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):",
+     "suggestion": "Remove the shadowed copy at line 5581."
+    },
+    {
+     "module": "exa",
+     "line": 5672,
+     "severity": "low",
+     "category": "duplicate-definition",
+     "description": "code_lint_tips is defined twice: line 5672 (shadowed, dead) and line 5870 (LIVE, last def wins). Bodies are byte-identical (sha256 6b2f64fbdc160658afbe7f529943c3e35b4b8eba71c57cd9f817ce572e515e33). Public name in __all__; callers always get the copy at 5870. Pure dead code (~20 lines).",
+     "evidence": "5672:def code_lint_tips(query: str, *, timeout=90.0):\n5870:def code_lint_tips(query: str, *, timeout=90.0):",
+     "suggestion": "Remove the shadowed copy at line 5672."
+    }
+   ],
+   "summary": "Exa (/home/ks/repos/search-skills/exa/src/exa/__init__.py): the 'Round-18' developer-workflows section was pasted into the file TWICE (block headers at lines 5451 and 5697). The second block redefines 5 names from the first block: pkg_releases (5459/5705), _dep_type (5507/5753), deprecations (5522/5768), snippet (5581/5826), code_lint_tips (5672/5870). In all 5 pairs the LAST definition is LIVE (Python last-def-wins); the earlier copies are dead. Four pairs are byte-identical (verified by hashing the full function source) - pure dead code. The deprecations pair has already drifted (comment removed, local variable renamed start->st between the copies), which is the concrete maintenance hazard: a future behavioral edit to the shadowed copy at line 5522 would be silently ignored because the live copy at 5768 shadows it. No crash or wrong-result impact in normal calls today, since every live body matches (functionally) the intended one. The two blocks also each carry a unique function that must be kept (api_reference at 5625 in block 1; is_deprecated at 5894 in block 2). Fix: delete the shadowed block ~5451-5696 while preserving api_reference. Brave (/home/ks/repos/search-skills/brave/src/brave/__init__.py): zero duplicate top-level names - every column-0 def/class name is unique, no findings. No column-0 duplicate variable assignments in either file. No __all__ collisions (the duplicated exa names each appear once in __all__, matching the single live definition)."
+  }
+ ],
+ "findings": [
+  {
+   "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+   "module": "both",
+   "severity": "medium",
+   "category": "duplication",
+   "line": 133,
+   "description": "The entire dual sync/async wrapper set is byte-identical across the two modules: exa/__init__.py lines 133-334 vs brave/__init__.py lines 522-723. This includes _identity_await, _AsyncDict, _AsyncStr, _AsyncList, _AsyncInt, _AsyncFloat, _AsyncBool, _wrap_result, _AsyncScalar, _make_async, _apply_async_to (~200 lines). A `diff` of the two ranges is empty (IDENTICAL). Both also carry the identical module-tail activation call `_apply_async_to(globals())` (exa:5988, brave:7213). Because the copy is verbatim, any bug or fix applied to one copy will silently diverge from the other \u2014 the highest-value target for an internal _common module.",
+   "evidence": "exa 133-137: 'def _identity_await(self): ... if False: # pragma: no cover - makes this a generator (required by await)\\n        yield\\n    return self' ; exa 140-147 class _AsyncDict(dict) with __await__ returning dict(self) ; exa 216 'def _wrap_result(value):' ; exa 311 'def _apply_async_to(module_dict):' // brave 522-526 identical _identity_await ; brave 529 class _AsyncDict ; brave 605 _wrap_result ; brave 700 _apply_async_to. diff <(sed -n '133,334p' exa/...) <(sed -n '522,723p' brave/...) -> IDENTICAL.",
+   "suggestion": "Move the whole block into a shared internal module (e.g. search_skills/_common/awaitable.py) and have both exa and brave import it; keep each module's trailing `_apply_async_to(globals())` call pointing at the shared function."
+  },
+  {
+   "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+   "module": "both",
+   "severity": "medium",
+   "category": "duplication",
+   "line": 411,
+   "description": "The API-key lookup trio is byte-identical: exa/__init__.py lines 411-488 vs brave/__init__.py lines 890-967 (_seek_api_key, _read_key_file, _get_api_key). `diff` of each function range is empty (IDENTICAL). The only differences are the module constants that parameterize it: exa has `_API_KEY_NAMES = ['EXA_API_KEY']`, `_API_LABEL = \"exa\"` (lines 407-408); brave has `_API_KEY_NAMES = ['BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY']`, `_API_LABEL = \"brave\"` (lines 886-887); both define `_API_KEY_CACHE = {}` (exa:409, brave:888). This is credential-resolution logic duplicated across both, so a behavior change or a path/env bug in one copy will not propagate to the other.",
+   "evidence": "Both define verbatim: 'def _seek_api_key(names=None):\\n    from pathlib import Path\\n    names = names or _API_KEY_NAMES\\n    for n in names:\\n        v = os.environ.get(n, \"\")\\n        if v and not v.startswith(\"${\"):\\n            return v ... stem = names[0].split(\"_\")[0].lower() ... return \"\"' ; 'def _read_key_file(path, names): ... if k.strip() in names and v.strip(): return v.strip().strip(\\\"'\\\"\\\\\\\"\\\")' ; 'def _get_api_key(): label = _API_LABEL ... _API_KEY_CACHE[label] = key; return key'. diff of 411-451/890-930, 453-471/932-950, 473-488/952-967 all -> IDENTICAL.",
+   "suggestion": "Lift the trio into _common with an injected (key_names, label) or a per-skill config object; each module passes its own _API_KEY_NAMES/_API_LABEL. Preserve the per-label _API_KEY_CACHE dict."
+  },
+  {
+   "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+   "module": "exa",
+   "line": 5522,
+   "severity": "medium",
+   "category": "duplicate-definition-drift",
+   "description": "deprecations is defined twice (line 5522 and line 5768) inside two pasted copies of the 'Round-18' block (headers at lines 5451 and 5697). LIVE definition is line 5768 (last def wins). The two bodies are NOT identical - they have already drifted: the shadowed copy at 5522 has the extra comment '# the model answer itself flags deprecation - record as a signal.' and names the date variable 'start' ('start = end - timedelta(days=max(1, days))' / 'start_published_date=start.strftime(\"%Y-%m-%d\")'), while the live copy at 5768 omits the comment and renames the variable 'st' ('st = end - timedelta(days=max(1, days))' / 'start_published_date=st.strftime(\"%Y-%m-%d\")'). Behavior is functionally equivalent today, but the divergence proves the two copies are maintained independently: an edit to the shadowed copy at 5522 would be silently inert. deprecations is in __all__ (public API).",
+   "evidence": "5522:def deprecations(query: str, *, days=30, timeout=90.0):\n...5553:        start = end - timedelta(days=max(1, days))\n...5556:                    start_published_date=start.strftime(\"%Y-%m-%d\"),\n5768:def deprecations(query: str, *, days=30, timeout=90.0):\n...5798:        st = end - timedelta(days=max(1, days))\n...5801:                    start_published_date=st.strftime(\"%Y-%m-%d\"),",
+   "suggestion": "Delete the entire first shadowed Round-18 block (lines ~5451-5696, which contains the shadowed pkg_releases/_dep_type/deprecations/snippet/code_lint_tips), keeping the live definitions at 5705/5753/5768/5826/5870. The first block's unique function api_reference (line 5625) must be preserved."
+  },
+  {
+   "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+   "module": "both",
+   "severity": "low",
+   "category": "duplication",
+   "line": 26,
+   "description": "The HTTP-engine core is duplicated with only trivial renames: module globals _ENGINE_LIMITS/_CLIENT/_WORKERS plus _http, _pool, _retry_after_seconds, _fanout. exa 26-79 vs brave 23-80. Bodies are verbatim except: `_http` uses `follow_redirects=True` in exa vs `follow_redirects=False` in brave; `_pool` uses `thread_name_prefix=\"exa\"` vs `\"brave\"`; `_retry_after_seconds` and `_fanout` differ only in docstring text. Note the intended `follow_redirects` difference means a _common _http must be parameterized, not shared as-is. exa additionally defines `_poll_until` (82-100) which has no brave counterpart, so it is exa-specific. These are small, low-risk duplicates.",
+   "evidence": "_http: exa line 37 'follow_redirects=True' vs brave line 33 'follow_redirects=False' (rest of body identical). _pool: exa 46 'ThreadPoolExecutor(max_workers=n, thread_name_prefix=\"exa\")' vs brave 42 'thread_name_prefix=\"brave\"'. _retry_after_seconds diff shows only an added docstring line in brave. _fanout diff shows only differing docstrings; the submit/collect loop (pool.submit / fut.result / try-except append) is identical.",
+   "suggestion": "Move _ENGINE_LIMITS/_CLIENT/_WORKERS/_http/_pool/_retry_after_seconds/_fanout into _common, making _http take a follow_redirects flag and _pool take a thread_name_prefix. Leave exa's _poll_until in exa (no counterpart in brave)."
+  },
+  {
+   "lens": "CROSS-MODULE SHARED CODE: exa vs brave helper duplication",
+   "module": "both",
+   "severity": "low",
+   "category": "duplication",
+   "line": 709,
+   "description": "Domain/url helpers are CONCEPTUALLY overlapping but DIVERGENT, not near-identical \u2014 flagging so a refactor does NOT wrongly merge them. exa `_domain_of` (709-724) computes a registrable domain by stripping scheme/www and slicing the last two labels, and a `hostname` property (693-700) uses urllib.parse.urlparse(...).hostname. brave `_url_host` (114-122) also uses urlparse(...).hostname but lowercases and strips a leading 'www.', and brave `_host` (1081-1084) just reads meta_url.hostname. Same problem space (extract host from a URL), different algorithms and outputs (registrable-domain vs full hostname). The overlap is only the shared `urlparse().hostname` idiom.",
+   "evidence": "exa 716 'host = url.split(\"//\", 1)[-1].split(\"/\", 1)[0] ... return \".\".join(labels[-2:])' (registrable domain) ; exa 698 'urllib.parse.urlparse(u if \"://\" in u else \"https://\" + u).hostname' ; brave 119 'host = (urlparse(str(url)).hostname or \"\").lower()' ; brave 122 'return host[4:] if host.startswith(\"www.\") else host'. No shared function; only the urlparse.hostname idiom matches.",
+   "suggestion": "Do not fold these into a single shared helper without first unifying the contract (registrable-domain vs host-without-www). If desired, share only a small `urlparse hostname` primitive and keep each module's post-processing separate."
+  },
+  {
+   "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+   "module": "exa",
+   "line": 5459,
+   "severity": "low",
+   "category": "duplicate-definition",
+   "description": "pkg_releases is defined twice: line 5459 (shadowed, dead) and line 5705 (LIVE, last def wins). The two bodies are byte-identical (same source, sha256 f357589e09efd171f6302167df4d51c1cbb6d7c9bbc92fed18314d42f07c9991), so there is no behavioral difference - pure dead code (~46 lines). pkg_releases is a public name in __all__; callers always get the copy at 5705.",
+   "evidence": "5459:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):\n5705:def pkg_releases(pkg, *, num_results=8, with_news=True, timeout=45.0):",
+   "suggestion": "Remove the shadowed copy at line 5459 as part of deleting the duplicated Round-18 block."
+  },
+  {
+   "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+   "module": "exa",
+   "line": 5507,
+   "severity": "low",
+   "category": "duplicate-definition",
+   "description": "Private helper _dep_type is defined twice: line 5507 (shadowed, dead) and line 5753 (LIVE, last def wins). Bodies are byte-identical (sha256 379eae056a7ef43c2a3819366e26a9d6f454134c883abc493b4a45a90d307e12). Not in __all__ (private); the live copy at 5753 is the one called by the live deprecations at 5768. Pure dead code (~13 lines).",
+   "evidence": "5507:def _dep_type(blob):\n5753:def _dep_type(blob):",
+   "suggestion": "Remove the shadowed copy at line 5507."
+  },
+  {
+   "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+   "module": "exa",
+   "line": 5581,
+   "severity": "low",
+   "category": "duplicate-definition",
+   "description": "snippet is defined twice: line 5581 (shadowed, dead) and line 5826 (LIVE, last def wins). Bodies are byte-identical (sha256 82ba6e720f225f7ebec5ebbd8bf34f46313c9624a30f16f1ef930e3a416ef128). snippet is public (in __all__); callers always get the copy at 5826. Pure dead code (~42 lines).",
+   "evidence": "5581:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):\n5826:def snippet(query: str, *, lang=None, num_results=6, timeout=45.0):",
+   "suggestion": "Remove the shadowed copy at line 5581."
+  },
+  {
+   "lens": "DUPLICATE / SHADOWED DEFINITIONS",
+   "module": "exa",
+   "line": 5672,
+   "severity": "low",
+   "category": "duplicate-definition",
+   "description": "code_lint_tips is defined twice: line 5672 (shadowed, dead) and line 5870 (LIVE, last def wins). Bodies are byte-identical (sha256 6b2f64fbdc160658afbe7f529943c3e35b4b8eba71c57cd9f817ce572e515e33). Public name in __all__; callers always get the copy at 5870. Pure dead code (~20 lines).",
+   "evidence": "5672:def code_lint_tips(query: str, *, timeout=90.0):\n5870:def code_lint_tips(query: str, *, timeout=90.0):",
+   "suggestion": "Remove the shadowed copy at line 5672."
+  }
+ ]
+}
