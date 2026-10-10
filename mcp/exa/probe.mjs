@@ -10,8 +10,8 @@
 // route + stop-reason enum are wired (pickEnum validated the reason
 // client-side before the request left), so the probe treats a stop/cancel
 // against a terminal run as an acceptable outcome.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 // Resolve the built server relative to this script, not CWD, so the
 // documented `node mcp/exa/probe.mjs` (run from the repo root) works too.
@@ -39,7 +39,7 @@ async function call(name, args, label, opts = {}) {
     return { passed: false, category: "transport", raw: undefined, text: "" };
   }
   const text = out.content?.[0]?.text ?? "";
-  const meta = out.content?.[0]?.metadata ?? {};
+  const meta = out.structuredContent ?? out.content?.[0]?._meta ?? {};
   const category = meta.category ?? null;
   const errored = out.isError === true || !!meta.error;
 

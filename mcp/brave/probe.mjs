@@ -1,8 +1,8 @@
 // Deeper probe: exercise the reworked Brave tools — web extra snippets,
 // freshness date-range, image filters, place radius, and the enum/validation
 // guards.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 // Resolve the built server relative to this script, not CWD, so the
 // documented `node mcp/brave/probe.mjs` (run from the repo root) works too.
@@ -23,7 +23,7 @@ async function call(name, args, label, opts = {}) {
   const { expectError = false, planGateOk = false } = opts;
   const out = await client.callTool({ name, arguments: args });
   const text = out.content?.[0]?.text ?? "";
-  const meta = out.content?.[0]?.metadata ?? {};
+  const meta = out.structuredContent ?? out.content?.[0]?._meta ?? {};
   const category = meta.category ?? null;
   const errored = out.isError === true || !!meta.error;
   let passed, note = "";
@@ -53,10 +53,11 @@ const placeOut = await (async () => {
     name: "brave_place_search",
     arguments: { query: "coffee shops", latitude: 37.77, longitude: -122.41, count: 3, radius: 2000 },
   });
-  const passed = out.isError !== true && !out.content?.[0]?.metadata?.error;
+  const bag = out.structuredContent ?? out.content?.[0]?._meta ?? {};
+  const passed = out.isError !== true && !bag.error;
   console.log(`\n[${passed ? "OK   " : "ERROR"}] place(radius) (brave_place_search)`);
   console.log((out.content?.[0]?.text ?? "").slice(0, 300));
-  return { passed, ids: (out.content?.[0]?.metadata?.raw?.results ?? [])
+  return { passed, ids: (bag.raw?.results ?? [])
     .map((r) => r?.id).filter((v) => typeof v === "string" && v.length > 0).slice(0, 5) };
 })();
 ok = placeOut.passed && ok;

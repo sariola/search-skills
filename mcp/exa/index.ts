@@ -30,21 +30,8 @@
 // No credentials are ever printed.
 // ---------------------------------------------------------------------------
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequest,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  Tool,
-  ResourceTemplate,
-  Prompt,
-} from "@modelcontextprotocol/sdk/types.js";
+import { Server, type Tool } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 const API_BASE = "https://api.exa.ai";
 const WEBSETS_BASE = "https://api.exa.ai/websets";
@@ -2501,26 +2488,20 @@ const exaEventGetTool: Tool = {
 // ---------------------------------------------------------------------------
 // Resources + resource templates
 // ---------------------------------------------------------------------------
-const resourceTemplates: ResourceTemplate[] = [
+const resourceTemplates = [
   {
     uriTemplate: "exa-team:",
     name: "Exa Team",
     description: "The team/plan associated with the EXA_API_KEY (plan, credits, limits).",
-    parameters: {},
-    examples: ["exa-team:"],
   },
   {
     uriTemplate: "exa-content:///{url}",
     name: "Exa Page Content",
-    description: "Fetch a single URL via Exa /contents (title, text, highlights, summary).",
-    parameters: {
-      url: { type: "string", description: "The URL to fetch (URL-encoded)" },
-    },
-    examples: ["exa-content:///https%3A%2F%2Fexa.ai%2F"],
+    description: "Fetch a single URL via Exa /contents. The path after exa-content:/// is the URL-encoded page URL.",
   },
 ];
 
-const serverPrompt: Prompt = {
+const serverPrompt = {
   name: "exa-server-prompt",
   description: "Instructions for using the Exa MCP server effectively",
   instructions: `This server provides access to Exa, a web search and page-reading API (api.exa.ai), including its full research surface: agentic runs, web-scale websets, server-side batches, change monitors, CSV imports, webhooks, and the event audit log.
@@ -2822,22 +2803,23 @@ function renderMonitorRun(run: any): string {
   return `Run ${run.id ?? "?"} (status: ${status}${at ? `, ${at}` : ""})${out}`;
 }
 
-async function main() {
-  const apiKey = process.env.EXA_API_KEY;
-  if (!apiKey) {
-    console.error("EXA_API_KEY environment variable is required");
-    process.exit(1);
-  }
+function toolResult(text: string, bag: Record<string, unknown>, isError = false) {
+  return {
+    ...(isError ? { isError: true as const } : {}),
+    structuredContent: bag,
+    content: [{ type: "text" as const, text, _meta: bag }],
+  };
+}
 
-  console.error("Starting Exa MCP Server...");
+function buildServer(apiKey: string): Server {
   const client = new ExaClient(apiKey);
 
   const server = new Server(
     { name: "exa-mcp-server", version: "1.2.0" },
     {
       capabilities: {
-        prompts: { default: serverPrompt },
-        resources: { templates: true, read: true },
+        prompts: {},
+        resources: {},
         tools: {},
       },
     },
@@ -2856,7 +2838,7 @@ async function main() {
   };
 
   // Read resources
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler("resources/read", async (request) => {
     const uri = request.params.uri;
     if (uri === "exa-team:") {
       const team = await client.team();
@@ -2884,17 +2866,17 @@ async function main() {
     throw new Error(`Unsupported resource URI: ${uri}`);
   });
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  server.setRequestHandler("resources/list", async () => ({
     resources: [
       { uri: "exa-team:", name: "Exa Team", mimeType: "application/json" },
     ],
   }));
 
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+  server.setRequestHandler("resources/templates/list", async () => ({
     resourceTemplates,
   }));
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     tools: [
       exaSearchTool, exaFetchTool, exaAnswerTool, exaAgentTool, exaFindSimilarTool,
       exaAgentGetTool, exaAgentListTool, exaAgentCancelTool, exaAgentStopTool, exaAgentEventsTool,
@@ -2920,16 +2902,24 @@ async function main() {
     ],
   }));
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: [serverPrompt],
+  server.setRequestHandler("prompts/list", async () => ({
+    prompts: [{ name: serverPrompt.name, description: serverPrompt.description }],
   }));
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    if (request.params.name === serverPrompt.name) return { prompt: serverPrompt };
+  server.setRequestHandler("prompts/get", async (request) => {
+    if (request.params.name === serverPrompt.name) {
+      return {
+        description: serverPrompt.description,
+        messages: [{
+          role: "user" as const,
+          content: { type: "text" as const, text: serverPrompt.instructions },
+        }],
+      };
+    }
     throw new Error(`Prompt not found: ${request.params.name}`);
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
+  server.setRequestHandler("tools/call", async (request) => {
     const { name, arguments: args = {} } = request.params;
     const meta = metricsMeta();
     try {
@@ -2973,13 +2963,10 @@ async function main() {
             answer = `\n\n--- synthesized answer ---\n${typeof data.output.content === "string"
               ? data.output.content : JSON.stringify(data.output.content)}`;
           }
-          return {
-            content: [{
-              type: "text",
-              text: `Found ${results.length} result(s):\n${lines.join("\n")}${answer}`,
-              metadata: { ...meta, raw: data, costDollars: data?.costDollars },
-            }],
-          };
+          return toolResult(
+            `Found ${results.length} result(s):\n${lines.join("\n")}${answer}`,
+            { ...meta, raw: data, costDollars: data?.costDollars },
+          );
         }
         case "exa_fetch": {
           const a: ExaFetchArgs = {
@@ -3002,9 +2989,10 @@ async function main() {
             throw new ExaApiError("exa_fetch needs either urls or ids", "bad_request");
           }
           const data = await client.fetch(a);
-          return {
-            content: [{ type: "text", text: renderContents(data), metadata: { ...meta, raw: data, costDollars: data?.costDollars } }],
-          };
+          return toolResult(
+            renderContents(data),
+            { ...meta, raw: data, costDollars: data?.costDollars },
+          );
         }
         case "exa_answer": {
           const a: ExaAnswerArgs = {
@@ -3017,13 +3005,10 @@ async function main() {
           const data = await client.answer(a);
           const cits: any[] = data?.citations ?? [];
           const srcLines = cits.map((c, i) => `  ${i + 1}. ${c.title ?? "(untitled)"} — ${c.url ?? ""}`).join("\n");
-          return {
-            content: [{
-              type: "text",
-              text: `${typeof data?.answer === "string" ? data.answer : JSON.stringify(data?.answer)}\n\nSources:\n${srcLines}`,
-              metadata: { ...meta, raw: data, costDollars: data?.costDollars },
-            }],
-          };
+          return toolResult(
+            `${typeof data?.answer === "string" ? data.answer : JSON.stringify(data?.answer)}\n\nSources:\n${srcLines}`,
+            { ...meta, raw: data, costDollars: data?.costDollars },
+          );
         }
         case "exa_agent": {
           const a: ExaAgentArgs = {
@@ -3045,13 +3030,10 @@ async function main() {
           for (const g of grounding) for (const c of g.citations ?? []) if (c.url && !cites.has(c.url)) cites.set(c.url, c.title ?? "");
           const srcLines = [...cites.entries()].map(([u, t], i) => `  ${i + 1}. ${t} — ${u}`).join("\n");
           const structured = run?.output?.structured ? `\n\nStructured:\n${JSON.stringify(run.output.structured, null, 2)}\n` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `Agent run ${run?.id} (${run?.status})${run?.costDollars?.total ? ` · cost $${run.costDollars.total.toFixed(4)}` : ""}\n\n${run?.output?.text ?? ""}${structured}\nSources:\n${srcLines}`,
-              metadata: { ...meta, raw: run },
-            }],
-          };
+          return toolResult(
+            `Agent run ${run?.id} (${run?.status})${run?.costDollars?.total ? ` · cost $${run.costDollars.total.toFixed(4)}` : ""}\n\n${run?.output?.text ?? ""}${structured}\nSources:\n${srcLines}`,
+            { ...meta, raw: run },
+          );
         }
         case "exa_find_similar": {
           const a: ExaFindSimilarArgs = {
@@ -3067,20 +3049,18 @@ async function main() {
           const data = await client.findSimilar(a);
           const results: any[] = data?.results ?? [];
           const lines = results.map((r, i) => `${i + 1}. ${r.title ?? "(untitled)"}\n   ${r.url ?? ""}`).join("\n");
-          return {
-            content: [{
-              type: "text",
-              text: `${results.length} similar page(s):\n${lines}`,
-              metadata: { ...meta, raw: data },
-            }],
-          };
+          return toolResult(
+            `${results.length} similar page(s):\n${lines}`,
+            { ...meta, raw: data },
+          );
         }
         case "exa_agent_get": {
           const runId = requiredStr(args, "runId", "exa_agent_get");
           const run = await client.agentGet(runId);
-          return {
-            content: [{ type: "text", text: renderAgentRun(run), metadata: { ...meta, raw: run } }],
-          };
+          return toolResult(
+            renderAgentRun(run),
+            { ...meta, raw: run },
+          );
         }
         case "exa_agent_list": {
           const data = await client.agentList({
@@ -3094,36 +3074,27 @@ async function main() {
             `   query: ${String(r.query ?? "").slice(0, 80)}` +
             `${r.costDollars?.total != null ? `\n   cost: $${Number(r.costDollars.total).toFixed(4)}` : ""}`).join("\n");
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${runs.length} agent run(s):\n${lines}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${runs.length} agent run(s):\n${lines}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_agent_cancel": {
           const runId = requiredStr(args, "runId", "exa_agent_cancel");
           const run = await client.agentCancel(runId);
-          return {
-            content: [{
-              type: "text",
-              text: `Cancellation requested for ${runId}${run?.status ? ` (status: ${run.status})` : ""}.`,
-              metadata: { ...meta, raw: run },
-            }],
-          };
+          return toolResult(
+            `Cancellation requested for ${runId}${run?.status ? ` (status: ${run.status})` : ""}.`,
+            { ...meta, raw: run },
+          );
         }
         case "exa_agent_stop": {
           const runId = requiredStr(args, "runId", "exa_agent_stop");
           const reason = pick(args, "reason", "string") ?? "stopped";
           const run = await client.agentStop(runId, reason);
-          return {
-            content: [{
-              type: "text",
-              text: `Stop (${reason}) applied to ${runId}${run?.status ? ` (status: ${run.status})` : ""}. Partial output retained.`,
-              metadata: { ...meta, raw: run },
-            }],
-          };
+          return toolResult(
+            `Stop (${reason}) applied to ${runId}${run?.status ? ` (status: ${run.status})` : ""}. Partial output retained.`,
+            { ...meta, raw: run },
+          );
         }
         case "exa_agent_events": {
           const runId = requiredStr(args, "runId", "exa_agent_events");
@@ -3140,13 +3111,10 @@ async function main() {
             return `${i + 1}. ${type}${label ? `: ${label}` : ""}${s ? ` — ${s.slice(0, 200)}` : ""}`;
           }).join("\n");
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${events.length} event(s) for ${runId}:\n${lines}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${events.length} event(s) for ${runId}:\n${lines}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_batch_create": {
           const requests = pick(args, "requests", "array");
@@ -3155,14 +3123,11 @@ async function main() {
           }
           const metadata = pick(args, "metadata", "object");
           const batch = await client.batchCreate(requests, metadata);
-          return {
-            content: [{
-              type: "text",
-              text: `Created batch ${batch?.id} (status: ${batch?.status ?? "?"}, counts: ${JSON.stringify(batch?.requestCounts ?? {})}). ` +
+          return toolResult(
+            `Created batch ${batch?.id} (status: ${batch?.status ?? "?"}, counts: ${JSON.stringify(batch?.requestCounts ?? {})}). ` +
                 `Call exa_batch_get with wait=true to collect the results.`,
-              metadata: { ...meta, raw: batch, batchId: batch?.id },
-            }],
-          };
+            { ...meta, raw: batch, batchId: batch?.id },
+          );
         }
         case "exa_batch_get": {
           const batchId = requiredStr(args, "batchId", "exa_batch_get");
@@ -3182,15 +3147,12 @@ async function main() {
             const summary = (typeof anyR?.body === "object" && anyR.body) ? "result" : "error";
             return `  - ${cid}: ${summary}`;
           }).join("\n");
-          return {
-            content: [{
-              type: "text",
-              text: `Batch ${batchId} (status: ${payload.batch?.status ?? "?"}, counts: ${JSON.stringify(counts)})` +
+          return toolResult(
+            `Batch ${batchId} (status: ${payload.batch?.status ?? "?"}, counts: ${JSON.stringify(counts)})` +
                 `${payload.results_url ? `\nresultsUrl: ${payload.results_url}` : ""}` +
                 (Object.keys(payload.results ?? {}).length ? `\nResults by customId (showing up to 25):\n${resultLines}` : ""),
-              metadata: { ...meta, raw: payload, results: payload.results, resultsUrl: payload.results_url },
-            }],
-          };
+            { ...meta, raw: payload, results: payload.results, resultsUrl: payload.results_url },
+          );
         }
         case "exa_webset_create": {
           const a: ExaWebsetCreateArgs = {
@@ -3212,14 +3174,11 @@ async function main() {
           const ws = await client.websetCreate(a);
           const searches: any[] = ws?.searches ?? [];
           const found = (ws?.items ?? []).length;
-          return {
-            content: [{
-              type: "text",
-              text: `Webset ${ws?.id} created (status: ${ws?.status ?? "?"}, searches: ${searches.map((s) => `${s.id}[${s.status ?? "?"}]`).join(", ") || "none"})` +
+          return toolResult(
+            `Webset ${ws?.id} created (status: ${ws?.status ?? "?"}, searches: ${searches.map((s) => `${s.id}[${s.status ?? "?"}]`).join(", ") || "none"})` +
                 `${found ? `, ${found} item(s) so far` : ""}. Use exa_webset_items to read the corpus, exa_webset_delete to clean up.`,
-              metadata: { ...meta, raw: ws, websetId: ws?.id },
-            }],
-          };
+            { ...meta, raw: ws, websetId: ws?.id },
+          );
         }
         case "exa_webset_preview": {
           const data = await client.websetPreview({
@@ -3232,13 +3191,10 @@ async function main() {
           const criteria = (search?.criteria ?? []).map((c: any) => c?.description ?? JSON.stringify(c)).join("; ");
           const previewItems: any[] = data?.items ?? [];
           const lines = previewItems.map((it, i) => `  ${i + 1}. ${it?.name ?? it?.properties?.company?.name ?? it?.properties?.person?.name ?? it?.url ?? JSON.stringify(it).slice(0, 120)}`).join("\n");
-          return {
-            content: [{
-              type: "text",
-              text: `Preview — entity: ${entity}; criteria: ${criteria || "(none)"}${lines ? `\nSample items (${previewItems.length}):\n${lines}` : ""}`,
-              metadata: { ...meta, raw: data },
-            }],
-          };
+          return toolResult(
+            `Preview — entity: ${entity}; criteria: ${criteria || "(none)"}${lines ? `\nSample items (${previewItems.length}):\n${lines}` : ""}`,
+            { ...meta, raw: data },
+          );
         }
         case "exa_webset_get": {
           const id = requiredStr(args, "websetId", "exa_webset_get");
@@ -3250,13 +3206,10 @@ async function main() {
           const searches: any[] = ws?.searches ?? [];
           const lines = searches.map((s) => `  - ${s.id}[${s.status ?? "?"}] ${String(s.query ?? "").slice(0, 60)}`).join("\n");
           const body = ws?.items ? `\n${renderWebsetItems({ data: ws.items, count: ws.items.length })}` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `Webset ${ws?.id} (status: ${ws?.status ?? "?"}, title: ${ws?.title ?? "-"})\nSearches:\n${lines || "  (none)"}${body}`,
-              metadata: { ...meta, raw: ws, websetId: ws?.id },
-            }],
-          };
+          return toolResult(
+            `Webset ${ws?.id} (status: ${ws?.status ?? "?"}, title: ${ws?.title ?? "-"})\nSearches:\n${lines || "  (none)"}${body}`,
+            { ...meta, raw: ws, websetId: ws?.id },
+          );
         }
         case "exa_webset_list": {
           const data = await client.websetList({
@@ -3268,13 +3221,10 @@ async function main() {
             `${i + 1}. [${w.status ?? "?"}] ${w.id} ${w.title ? `— ${w.title}` : ""}\n` +
             `   entity: ${(w.entity?.type ?? w.searches?.[0]?.entity?.type) ?? "?"}`).join("\n");
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${websets.length} webset(s):\n${lines || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${websets.length} webset(s):\n${lines || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_webset_items": {
           const id = requiredStr(args, "websetId", "exa_webset_items");
@@ -3283,13 +3233,10 @@ async function main() {
             cursor: pick(args, "cursor", "string"),
             sourceId: pick(args, "sourceId", "string"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: renderWebsetItems(data),
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            renderWebsetItems(data),
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_webset_add_search": {
           const id = requiredStr(args, "websetId", "exa_webset_add_search");
@@ -3305,13 +3252,10 @@ async function main() {
             behavior: pickEnum(args, "behavior", WEBSET_BEHAVIORS, "exa_webset_add_search"),
             metadata: pick(args, "metadata", "object"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: `Added search ${s?.id ?? "(created)"} to webset ${id} (status: ${s?.status ?? "?"}). Poll with exa_webset_get(websetId, wait=true).`,
-              metadata: { ...meta, raw: s },
-            }],
-          };
+          return toolResult(
+            `Added search ${s?.id ?? "(created)"} to webset ${id} (status: ${s?.status ?? "?"}). Poll with exa_webset_get(websetId, wait=true).`,
+            { ...meta, raw: s },
+          );
         }
         case "exa_webset_enrich": {
           const id = requiredStr(args, "websetId", "exa_webset_enrich");
@@ -3321,13 +3265,10 @@ async function main() {
             options: pick(args, "options", "array"),
             metadata: pick(args, "metadata", "object"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: `Enrichment ${e?.id ?? "(created)"} queued on webset ${id} (status: ${e?.status ?? "?"}). Read results via exa_webset_items.`,
-              metadata: { ...meta, raw: e },
-            }],
-          };
+          return toolResult(
+            `Enrichment ${e?.id ?? "(created)"} queued on webset ${id} (status: ${e?.status ?? "?"}). Read results via exa_webset_items.`,
+            { ...meta, raw: e },
+          );
         }
         case "exa_webset_update": {
           const id = requiredStr(args, "websetId", "exa_webset_update");
@@ -3337,35 +3278,26 @@ async function main() {
             throw new ExaApiError("exa_webset_update needs at least one of title or metadata", "bad_request");
           }
           const ws = await client.websetUpdate(id, { title, metadata });
-          return {
-            content: [{
-              type: "text",
-              text: `Updated webset ${id}${ws?.title ? ` (title: ${ws.title})` : ""}.`,
-              metadata: { ...meta, raw: ws },
-            }],
-          };
+          return toolResult(
+            `Updated webset ${id}${ws?.title ? ` (title: ${ws.title})` : ""}.`,
+            { ...meta, raw: ws },
+          );
         }
         case "exa_webset_cancel": {
           const id = requiredStr(args, "websetId", "exa_webset_cancel");
           const ws = await client.websetCancel(id);
-          return {
-            content: [{
-              type: "text",
-              text: `Cancellation requested for webset ${id}${ws?.status ? ` (status: ${ws.status})` : ""}.`,
-              metadata: { ...meta, raw: ws },
-            }],
-          };
+          return toolResult(
+            `Cancellation requested for webset ${id}${ws?.status ? ` (status: ${ws.status})` : ""}.`,
+            { ...meta, raw: ws },
+          );
         }
         case "exa_webset_delete": {
           const id = requiredStr(args, "websetId", "exa_webset_delete");
           const res = await client.websetDelete(id);
-          return {
-            content: [{
-              type: "text",
-              text: `Deleted webset ${id}.`,
-              metadata: { ...meta, raw: res },
-            }],
-          };
+          return toolResult(
+            `Deleted webset ${id}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_batch_list": {
           const data = await client.batchList({
@@ -3376,38 +3308,34 @@ async function main() {
           const lines = rows.map((r, i) =>
             `${i + 1}. [${r.status ?? "?"}] ${r.id} (counts: ${JSON.stringify(r.requestCounts ?? {})})`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} batch(es):\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} batch(es):\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_batch_cancel": {
           const batchId = requiredStr(args, "batchId", "exa_batch_cancel");
           const b = await client.batchCancel(batchId);
-          return {
-            content: [{
-              type: "text",
-              text: `Cancellation requested for batch ${batchId} (status: ${b?.status ?? "?"}).`,
-              metadata: { ...meta, raw: b },
-            }],
-          };
+          return toolResult(
+            `Cancellation requested for batch ${batchId} (status: ${b?.status ?? "?"}).`,
+            { ...meta, raw: b },
+          );
         }
         case "exa_batch_delete": {
           const batchId = requiredStr(args, "batchId", "exa_batch_delete");
           const res = await client.batchDelete(batchId);
-          return {
-            content: [{ type: "text", text: `Deleted batch ${batchId}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted batch ${batchId}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_agent_delete": {
           const runId = requiredStr(args, "runId", "exa_agent_delete");
           const res = await client.agentDelete(runId);
-          return {
-            content: [{ type: "text", text: `Deleted agent run ${runId}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted agent run ${runId}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_monitor_create": {
           const m = await client.monitorCreate({
@@ -3421,13 +3349,10 @@ async function main() {
             metadata: pick(args, "metadata", "object"),
             search: pick(args, "search", "object"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: `Monitor ${m?.id ?? "(created)"} (status: ${m?.status ?? "?"})${m?.webhookSecret ? " · webhook secret returned" : ""}.`,
-              metadata: { ...meta, raw: m, monitorId: m?.id },
-            }],
-          };
+          return toolResult(
+            `Monitor ${m?.id ?? "(created)"} (status: ${m?.status ?? "?"})${m?.webhookSecret ? " · webhook secret returned" : ""}.`,
+            { ...meta, raw: m, monitorId: m?.id },
+          );
         }
         case "exa_monitor_list": {
           const data = await client.monitorList({
@@ -3437,19 +3362,17 @@ async function main() {
             limit: pickIntInRange(args, "limit", 1, 500, "exa_monitor_list"),
             cursor: pick(args, "cursor", "string"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: renderList(data, "monitor", renderMonitor, 50),
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            renderList(data, "monitor", renderMonitor, 50),
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_monitor_get": {
           const m = await client.monitorGet(requiredStr(args, "monitorId", "exa_monitor_get"));
-          return {
-            content: [{ type: "text", text: renderMonitor(m), metadata: { ...meta, raw: m } }],
-          };
+          return toolResult(
+            renderMonitor(m),
+            { ...meta, raw: m },
+          );
         }
         case "exa_monitor_update": {
           const monitorId = requiredStr(args, "monitorId", "exa_monitor_update");
@@ -3464,27 +3387,26 @@ async function main() {
             throw new ExaApiError("exa_monitor_update needs at least one field (search|trigger|webhook|metadata|status)", "bad_request");
           }
           const m = await client.monitorUpdate(monitorId, body);
-          return {
-            content: [{ type: "text", text: `Updated monitor ${monitorId}: ${renderMonitor(m ?? body)}`, metadata: { ...meta, raw: m } }],
-          };
+          return toolResult(
+            `Updated monitor ${monitorId}: ${renderMonitor(m ?? body)}`,
+            { ...meta, raw: m },
+          );
         }
         case "exa_monitor_delete": {
           const monitorId = requiredStr(args, "monitorId", "exa_monitor_delete");
           const res = await client.monitorDelete(monitorId);
-          return {
-            content: [{ type: "text", text: `Deleted monitor ${monitorId}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted monitor ${monitorId}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_monitor_trigger": {
           const monitorId = requiredStr(args, "monitorId", "exa_monitor_trigger");
           const r = await client.monitorTrigger(monitorId);
-          return {
-            content: [{
-              type: "text",
-              text: `Triggered a run on monitor ${monitorId}${r?.id ? ` (run ${r.id})` : ""}${r?.status ? ` (status: ${r.status})` : ""}.`,
-              metadata: { ...meta, raw: r },
-            }],
-          };
+          return toolResult(
+            `Triggered a run on monitor ${monitorId}${r?.id ? ` (run ${r.id})` : ""}${r?.status ? ` (status: ${r.status})` : ""}.`,
+            { ...meta, raw: r },
+          );
         }
         case "exa_monitor_runs": {
           const monitorId = requiredStr(args, "monitorId", "exa_monitor_runs");
@@ -3495,21 +3417,19 @@ async function main() {
           const rows: any[] = data?.data ?? [];
           const lines = rows.map((r, i) => `${i + 1}. [${r.status ?? "?"}] ${r.id}${r.createdAt ? ` (${r.createdAt})` : ""}`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} run(s) for monitor ${monitorId}:\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} run(s) for monitor ${monitorId}:\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_monitor_run_get": {
           const monitorId = requiredStr(args, "monitorId", "exa_monitor_run_get");
           const runId = requiredStr(args, "runId", "exa_monitor_run_get");
           const run = await client.monitorRunGet(monitorId, runId);
-          return {
-            content: [{ type: "text", text: renderMonitorRun(run), metadata: { ...meta, raw: run } }],
-          };
+          return toolResult(
+            renderMonitorRun(run),
+            { ...meta, raw: run },
+          );
         }
         case "exa_monitor_batch": {
           const data = await client.monitorBatch({
@@ -3520,9 +3440,10 @@ async function main() {
             dryRun: pick(args, "dryRun", "boolean") ?? true,
             limit: pickIntInRange(args, "limit", 1, 500, "exa_monitor_batch"),
           });
-          return {
-            content: [{ type: "text", text: renderObject(data, "Monitor batch result"), metadata: { ...meta, raw: data } }],
-          };
+          return toolResult(
+            renderObject(data, "Monitor batch result"),
+            { ...meta, raw: data },
+          );
         }
         case "exa_webset_monitor_create": {
           const m = await client.websetMonitorCreate({
@@ -3536,13 +3457,10 @@ async function main() {
             behavior: pickEnum(args, "behavior", WMONITOR_BEHAVIORS, "exa_webset_monitor_create"),
             metadata: pick(args, "metadata", "object"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: `Webset monitor ${m?.id ?? "(created)"} (status: ${m?.status ?? "?"}). Use exa_webset_monitor_runs to watch it.`,
-              metadata: { ...meta, raw: m, monitorId: m?.id },
-            }],
-          };
+          return toolResult(
+            `Webset monitor ${m?.id ?? "(created)"} (status: ${m?.status ?? "?"}). Use exa_webset_monitor_runs to watch it.`,
+            { ...meta, raw: m, monitorId: m?.id },
+          );
         }
         case "exa_webset_monitor_list": {
           const data = await client.websetMonitorList({
@@ -3550,19 +3468,17 @@ async function main() {
             limit: pickIntInRange(args, "limit", 1, 200, "exa_webset_monitor_list"),
             cursor: pick(args, "cursor", "string"),
           });
-          return {
-            content: [{
-              type: "text",
-              text: renderList(data, "webset monitor", renderMonitor, 50),
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            renderList(data, "webset monitor", renderMonitor, 50),
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_webset_monitor_get": {
           const m = await client.websetMonitorGet(requiredStr(args, "monitorId", "exa_webset_monitor_get"));
-          return {
-            content: [{ type: "text", text: renderMonitor(m), metadata: { ...meta, raw: m } }],
-          };
+          return toolResult(
+            renderMonitor(m),
+            { ...meta, raw: m },
+          );
         }
         case "exa_webset_monitor_update": {
           const monitorId = requiredStr(args, "monitorId", "exa_webset_monitor_update");
@@ -3579,16 +3495,18 @@ async function main() {
             throw new ExaApiError("exa_webset_monitor_update needs at least one field (status|cadence|behavior|metadata)", "bad_request");
           }
           const m = await client.websetMonitorUpdate(monitorId, body);
-          return {
-            content: [{ type: "text", text: `Updated webset monitor ${monitorId}: ${renderMonitor(m ?? body)}`, metadata: { ...meta, raw: m } }],
-          };
+          return toolResult(
+            `Updated webset monitor ${monitorId}: ${renderMonitor(m ?? body)}`,
+            { ...meta, raw: m },
+          );
         }
         case "exa_webset_monitor_delete": {
           const monitorId = requiredStr(args, "monitorId", "exa_webset_monitor_delete");
           const res = await client.websetMonitorDelete(monitorId);
-          return {
-            content: [{ type: "text", text: `Deleted webset monitor ${monitorId}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted webset monitor ${monitorId}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_webset_monitor_runs": {
           const monitorId = requiredStr(args, "monitorId", "exa_webset_monitor_runs");
@@ -3599,37 +3517,37 @@ async function main() {
           const rows: any[] = data?.data ?? [];
           const lines = rows.map((r, i) => `${i + 1}. [${r.status ?? "?"}] ${r.id}${r.createdAt ? ` (${r.createdAt})` : ""}`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} run(s) for webset monitor ${monitorId}:\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} run(s) for webset monitor ${monitorId}:\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_webset_monitor_run_get": {
           const monitorId = requiredStr(args, "monitorId", "exa_webset_monitor_run_get");
           const runId = requiredStr(args, "runId", "exa_webset_monitor_run_get");
           const run = await client.websetMonitorRunGet(monitorId, runId);
-          return {
-            content: [{ type: "text", text: renderMonitorRun(run), metadata: { ...meta, raw: run } }],
-          };
+          return toolResult(
+            renderMonitorRun(run),
+            { ...meta, raw: run },
+          );
         }
         case "exa_webset_item_get": {
           const id = requiredStr(args, "websetId", "exa_webset_item_get");
           const itemId = requiredStr(args, "itemId", "exa_webset_item_get");
           const item = await client.websetItemGet(id, itemId);
-          return {
-            content: [{ type: "text", text: renderObject(item, `Webset item ${itemId}`), metadata: { ...meta, raw: item } }],
-          };
+          return toolResult(
+            renderObject(item, `Webset item ${itemId}`),
+            { ...meta, raw: item },
+          );
         }
         case "exa_webset_item_delete": {
           const id = requiredStr(args, "websetId", "exa_webset_item_delete");
           const itemId = requiredStr(args, "itemId", "exa_webset_item_delete");
           const res = await client.websetItemDelete(id, itemId);
-          return {
-            content: [{ type: "text", text: `Removed item ${itemId} from webset ${id}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Removed item ${itemId} from webset ${id}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_webset_search_status": {
           const id = requiredStr(args, "websetId", "exa_webset_search_status");
@@ -3638,41 +3556,37 @@ async function main() {
           const lines = [`Search ${searchId} (status: ${s?.status ?? "?"})`];
           if (s?.count !== undefined) lines.push(`items found so far: ${s.count}`);
           if (s?.recall?.expected) lines.push(`recall estimate: ${JSON.stringify(s.recall.expected)}`);
-          return {
-            content: [{ type: "text", text: lines.join("\n"), metadata: { ...meta, raw: s } }],
-          };
+          return toolResult(
+            lines.join("\n"),
+            { ...meta, raw: s },
+          );
         }
         case "exa_webset_search_cancel": {
           const id = requiredStr(args, "websetId", "exa_webset_search_cancel");
           const searchId = requiredStr(args, "searchId", "exa_webset_search_cancel");
           const s = await client.websetSearchCancel(id, searchId);
-          return {
-            content: [{
-              type: "text",
-              text: `Cancellation requested for search ${searchId} on webset ${id}${s?.status ? ` (status: ${s.status})` : ""}.`,
-              metadata: { ...meta, raw: s },
-            }],
-          };
+          return toolResult(
+            `Cancellation requested for search ${searchId} on webset ${id}${s?.status ? ` (status: ${s.status})` : ""}.`,
+            { ...meta, raw: s },
+          );
         }
         case "exa_enrichment_get": {
           const id = requiredStr(args, "websetId", "exa_enrichment_get");
           const enrichmentId = requiredStr(args, "enrichmentId", "exa_enrichment_get");
           const e = await client.enrichmentGet(id, enrichmentId);
-          return {
-            content: [{ type: "text", text: renderObject(e, `Enrichment ${enrichmentId}`), metadata: { ...meta, raw: e } }],
-          };
+          return toolResult(
+            renderObject(e, `Enrichment ${enrichmentId}`),
+            { ...meta, raw: e },
+          );
         }
         case "exa_enrichment_cancel": {
           const id = requiredStr(args, "websetId", "exa_enrichment_cancel");
           const enrichmentId = requiredStr(args, "enrichmentId", "exa_enrichment_cancel");
           const e = await client.enrichmentCancel(id, enrichmentId);
-          return {
-            content: [{
-              type: "text",
-              text: `Cancellation requested for enrichment ${enrichmentId} on webset ${id}${e?.status ? ` (status: ${e.status})` : ""}.`,
-              metadata: { ...meta, raw: e },
-            }],
-          };
+          return toolResult(
+            `Cancellation requested for enrichment ${enrichmentId} on webset ${id}${e?.status ? ` (status: ${e.status})` : ""}.`,
+            { ...meta, raw: e },
+          );
         }
         case "exa_enrichment_update": {
           const id = requiredStr(args, "websetId", "exa_enrichment_update");
@@ -3690,17 +3604,19 @@ async function main() {
             throw new ExaApiError("exa_enrichment_update needs at least one field (description|format|options|metadata)", "bad_request");
           }
           const e = await client.enrichmentUpdate(id, enrichmentId, body);
-          return {
-            content: [{ type: "text", text: `Updated enrichment ${enrichmentId}: ${renderObject(e ?? body, "enrichment")}`, metadata: { ...meta, raw: e } }],
-          };
+          return toolResult(
+            `Updated enrichment ${enrichmentId}: ${renderObject(e ?? body, "enrichment")}`,
+            { ...meta, raw: e },
+          );
         }
         case "exa_enrichment_delete": {
           const id = requiredStr(args, "websetId", "exa_enrichment_delete");
           const enrichmentId = requiredStr(args, "enrichmentId", "exa_enrichment_delete");
           const res = await client.enrichmentDelete(id, enrichmentId);
-          return {
-            content: [{ type: "text", text: `Deleted enrichment ${enrichmentId} from webset ${id}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted enrichment ${enrichmentId} from webset ${id}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_import_create": {
           const size = pickIntInRange(args, "size", 0, 52428800, "exa_import_create");
@@ -3717,13 +3633,10 @@ async function main() {
             metadata: pick(args, "metadata", "object"),
           });
           const url = imp?.uploadUrl ?? imp?.url;
-          return {
-            content: [{
-              type: "text",
-              text: `Import ${imp?.id ?? "(created)"} (status: ${imp?.status ?? "?"})${url ? `\nUpload the CSV to: ${url}` : ""}${imp?.uploadValidUntil ? ` (until ${imp.uploadValidUntil})` : ""}.`,
-              metadata: { ...meta, raw: imp, importId: imp?.id, uploadUrl: url },
-            }],
-          };
+          return toolResult(
+            `Import ${imp?.id ?? "(created)"} (status: ${imp?.status ?? "?"})${url ? `\nUpload the CSV to: ${url}` : ""}${imp?.uploadValidUntil ? ` (until ${imp.uploadValidUntil})` : ""}.`,
+            { ...meta, raw: imp, importId: imp?.id, uploadUrl: url },
+          );
         }
         case "exa_import_list": {
           const data = await client.importList({
@@ -3733,19 +3646,17 @@ async function main() {
           const rows: any[] = data?.data ?? [];
           const lines = rows.map((r, i) => `${i + 1}. [${r.status ?? "?"}] ${r.id} ${r.title ? `— ${r.title}` : ""}`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} import(s):\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} import(s):\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_import_get": {
           const imp = await client.importGet(requiredStr(args, "importId", "exa_import_get"));
-          return {
-            content: [{ type: "text", text: renderObject(imp, "Import"), metadata: { ...meta, raw: imp } }],
-          };
+          return toolResult(
+            renderObject(imp, "Import"),
+            { ...meta, raw: imp },
+          );
         }
         case "exa_import_update": {
           const importId = requiredStr(args, "importId", "exa_import_update");
@@ -3758,16 +3669,18 @@ async function main() {
           if (title !== undefined) body.title = title;
           if (metadata !== undefined) body.metadata = metadata;
           const imp = await client.importUpdate(importId, body);
-          return {
-            content: [{ type: "text", text: `Updated import ${importId}${imp?.title ? ` (title: ${imp.title})` : ""}.`, metadata: { ...meta, raw: imp } }],
-          };
+          return toolResult(
+            `Updated import ${importId}${imp?.title ? ` (title: ${imp.title})` : ""}.`,
+            { ...meta, raw: imp },
+          );
         }
         case "exa_import_delete": {
           const importId = requiredStr(args, "importId", "exa_import_delete");
           const res = await client.importDelete(importId);
-          return {
-            content: [{ type: "text", text: `Deleted import ${importId}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted import ${importId}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_webhook_create": {
           const events = pick(args, "events", "array");
@@ -3779,13 +3692,10 @@ async function main() {
             throw new ExaApiError("exa_webhook_create requires a non-empty 'url'", "bad_request");
           }
           const wh = await client.webhookCreate({ events, url, metadata: pick(args, "metadata", "object") });
-          return {
-            content: [{
-              type: "text",
-              text: `Webhook ${wh?.id ?? "(created)"} registered for ${events.length} event type(s)${wh?.secret ? " (secret returned — store it to verify signatures)" : ""}.`,
-              metadata: { ...meta, raw: wh, webhookId: wh?.id },
-            }],
-          };
+          return toolResult(
+            `Webhook ${wh?.id ?? "(created)"} registered for ${events.length} event type(s)${wh?.secret ? " (secret returned — store it to verify signatures)" : ""}.`,
+            { ...meta, raw: wh, webhookId: wh?.id },
+          );
         }
         case "exa_webhook_list": {
           const data = await client.webhookList({
@@ -3795,19 +3705,17 @@ async function main() {
           const rows: any[] = data?.data ?? [];
           const lines = rows.map((r, i) => `${i + 1}. [${r.active ? "active" : "inactive"}] ${r.id} → ${r.url} (${(r.events ?? []).join(", ")})`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} webhook(s):\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} webhook(s):\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_webhook_get": {
           const wh = await client.webhookGet(requiredStr(args, "webhookId", "exa_webhook_get"));
-          return {
-            content: [{ type: "text", text: renderObject(wh, "Webhook"), metadata: { ...meta, raw: wh } }],
-          };
+          return toolResult(
+            renderObject(wh, "Webhook"),
+            { ...meta, raw: wh },
+          );
         }
         case "exa_webhook_update": {
           const webhookId = requiredStr(args, "webhookId", "exa_webhook_update");
@@ -3822,16 +3730,18 @@ async function main() {
           if (url !== undefined) body.url = url;
           if (metadata !== undefined) body.metadata = metadata;
           const wh = await client.webhookUpdate(webhookId, body);
-          return {
-            content: [{ type: "text", text: `Updated webhook ${webhookId}.`, metadata: { ...meta, raw: wh } }],
-          };
+          return toolResult(
+            `Updated webhook ${webhookId}.`,
+            { ...meta, raw: wh },
+          );
         }
         case "exa_webhook_delete": {
           const webhookId = requiredStr(args, "webhookId", "exa_webhook_delete");
           const res = await client.webhookDelete(webhookId);
-          return {
-            content: [{ type: "text", text: `Deleted webhook ${webhookId}.`, metadata: { ...meta, raw: res } }],
-          };
+          return toolResult(
+            `Deleted webhook ${webhookId}.`,
+            { ...meta, raw: res },
+          );
         }
         case "exa_webhook_attempts": {
           const webhookId = requiredStr(args, "webhookId", "exa_webhook_attempts");
@@ -3845,13 +3755,10 @@ async function main() {
           const lines = rows.map((r, i) =>
             `${i + 1}. ${r.successful ? "OK" : "FAIL"} ${r.eventType ?? "?"} → HTTP ${r.responseStatusCode ?? "?"} (attempt ${r.attempt ?? 1}${r.attemptedAt ? `, ${r.attemptedAt}` : ""})`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} delivery attempt(s) for webhook ${webhookId}:\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} delivery attempt(s) for webhook ${webhookId}:\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_event_list": {
           const data = await client.eventList({
@@ -3866,19 +3773,17 @@ async function main() {
           const lines = rows.map((r, i) =>
             `${i + 1}. ${r.type ?? r.eventType ?? "?"} ${r.id ?? ""}${r.createdAt ? ` (${r.createdAt})` : ""}${r.subject?.id ? ` on ${r.subject.id}` : ""}`);
           const more = data?.hasMore ? `\n…more (cursor: ${data.nextCursor})` : "";
-          return {
-            content: [{
-              type: "text",
-              text: `${rows.length} event(s):\n${lines.join("\n") || "  (none)"}${more}`,
-              metadata: { ...meta, raw: data, nextCursor: data?.nextCursor },
-            }],
-          };
+          return toolResult(
+            `${rows.length} event(s):\n${lines.join("\n") || "  (none)"}${more}`,
+            { ...meta, raw: data, nextCursor: data?.nextCursor },
+          );
         }
         case "exa_event_get": {
           const ev = await client.eventGet(requiredStr(args, "eventId", "exa_event_get"));
-          return {
-            content: [{ type: "text", text: renderObject(ev, "Event"), metadata: { ...meta, raw: ev } }],
-          };
+          return toolResult(
+            renderObject(ev, "Event"),
+            { ...meta, raw: ev },
+          );
         }
         default:
           throw new Error(`Unknown tool: ${name}`);
@@ -3889,25 +3794,40 @@ async function main() {
         : (error instanceof Error ? error.message : String(error));
       const category = error instanceof ExaApiError ? error.category : "error";
       console.error("Error executing tool:", error);
-      // Spec-compliant tool error: isError: true plus the machine-readable
-      // category in metadata.
-      return {
-        isError: true,
-        content: [{
-          type: "text",
-          text: JSON.stringify({ error: message, category }, null, 2),
-          metadata: { error: true, category, ...meta },
-        }],
-      };
+      // Spec-compliant tool error: isError plus the bag on structuredContent
+      // and content[0]._meta (category, apiMetrics).
+      return toolResult(
+        JSON.stringify({ error: message, category }, null, 2),
+        { error: true, category, ...meta },
+        true,
+      );
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
+}
+
+function main(): void {
+  const apiKey = process.env.EXA_API_KEY;
+  if (!apiKey) {
+    console.error("EXA_API_KEY environment variable is required");
+    process.exit(1);
+  }
+  console.error("Starting Exa MCP Server...");
+  // Missing-key exit stays above serveStdio: `node build/index.js` with no
+  // key must exit 1. The API client is built inside the factory, once per
+  // stdio connection. Default legacy mode is 'serve' (initialize still works).
+  serveStdio(() => buildServer(apiKey), {
+    onerror(error) {
+      console.error("MCP stdio error:", error instanceof Error ? error.message : String(error));
+    },
+  });
   console.error("Exa MCP Server running on stdio");
 }
 
-main().catch((error: unknown) => {
+try {
+  main();
+} catch (error: unknown) {
   console.error("Fatal error in main():", error instanceof Error ? error.message : String(error));
   process.exit(1);
-});
+}

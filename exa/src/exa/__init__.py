@@ -5754,7 +5754,7 @@ def deprecations(query: str, *, days=30, timeout=90.0):
          "markdown"}.
     """
     import re as _re
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     # Stem matchers: substring for stems that inflect (removals, migrated, deprecation)
     # and for end[- ]of[- ]life; word-boundary only for whole words. Case-insensitive.
     def _hits(blob, stems, words):
@@ -5778,7 +5778,7 @@ def deprecations(query: str, *, days=30, timeout=90.0):
     if ans_text and _hits(ans_text, ("deprecat", "migrat", "remov"), ("obsolete", "breaking")):
         sig.append({"url": None, "title": ans_text[:140], "type": "deprecat"})
     try:
-        end = datetime.utcnow()
+        end = datetime.now(timezone.utc)
         st = end - timedelta(days=max(1, days))
         sr = search(query + " deprecated", mode="news",
                     num_results=10, with_summary=True,

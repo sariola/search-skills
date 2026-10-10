@@ -1,10 +1,8 @@
 // E2E smoke test: spawn the built Exa MCP server over stdio, then drive a real
 // MCP session (initialize, tools/list, resources, a live tool call).
 // Run: EXA_API_KEY=... bun run build/index.js  (as a child) — or just `bun smoke.mjs`
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import {
-  StdioClientTransport,
-} from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const t0 = Date.now();
 // Resolve the built server relative to this script, not CWD, so the

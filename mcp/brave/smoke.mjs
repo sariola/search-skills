@@ -1,8 +1,8 @@
 // E2E smoke test: spawn the built Brave Search MCP server over stdio, then
 // drive a real MCP session (initialize, tools/list, resources, live tool calls).
 // Run:  bun smoke.mjs   (BRAVE_SEARCH_API_KEY / BRAVE_API_KEY in env or .env)
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const t0 = Date.now();
 // Resolve the built server relative to this script, not CWD, so the
@@ -84,7 +84,8 @@ const llm = await client.callTool({
   name: "brave_llm_context",
   arguments: { query: "capital of France" },
 });
-const llmCat = llm.content?.[0]?.metadata?.category;
+const llmBag = llm.structuredContent ?? llm.content?.[0]?._meta ?? {};
+const llmCat = llmBag.category;
 const llmOk = !llm.isError || llmCat === "plan";
 console.log(`\nbrave_llm_context -> ${llm.isError ? `category=${llmCat} (${llmCat === "plan" ? "plan-gated, expected" : "unexpected error"})` : "live"}`);
 if (!llmOk) {

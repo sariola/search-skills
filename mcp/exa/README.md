@@ -128,10 +128,12 @@ bun probe.mjs        # deeper: date-range search, category, contents extras,
 
 - Rate limiting: the client serializes all API calls and throttles toward a
   conservative 2000 req/hour budget; each tool response carries `apiMetrics`
-  (requests in last hour, remaining, average latency, queue length).
-- Errors are returned as JSON `{ error, category }` with `metadata.error: true`
-  and `isError: true` (MCP-spec tool error) plus a category (`auth`, `plan`,
-  `not_found`, `rate_limit`, `bad_request`, `server`, `http`) so callers can
+  (requests in last hour, remaining, average latency, queue length) on
+  `structuredContent` and `content[0]._meta`.
+- Errors are returned as JSON `{ error, category }` with `isError: true`.
+  The same bag (`error`, `category`, `apiMetrics`) is on `structuredContent`
+  and `content[0]._meta` (`auth`, `plan`, `not_found`, `rate_limit`,
+  `bad_request`, `server`, `http`) so callers can
   distinguish a bad key from a plan-gated endpoint.
 - Client-side validation: enum-like args (`searchType`, `effort`,
   `textVerbosity`) and range args (`numResults`, `maxCharacters`, `links`,
