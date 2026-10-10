@@ -34,21 +34,8 @@
 // No credentials are ever printed.
 // ---------------------------------------------------------------------------
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequest,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  Tool,
-  ResourceTemplate,
-  Prompt,
-} from "@modelcontextprotocol/sdk/types.js";
+import { Server, type Tool } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 const API_BASE = "https://api.search.brave.com";
 
@@ -784,15 +771,13 @@ const ENDPOINT_CATALOG = [
   { tool: "brave_spellcheck", path: "/res/v1/spellcheck/search" },
 ];
 
-const resourceTemplates: ResourceTemplate[] = [
+const resourceTemplates = [
   {
     uriTemplate: "brave-about:",
     name: "Brave Server Info",
     description:
       "Static info about this Brave Search MCP server: base URL, auth header, " +
       "available tools/endpoints, and rate-limit notes. No network call.",
-    parameters: {},
-    examples: ["brave-about:"],
   },
   {
     uriTemplate: "brave-status:",
@@ -800,12 +785,10 @@ const resourceTemplates: ResourceTemplate[] = [
     description:
       "Live health check: validates the BRAVE_SEARCH_API_KEY with a minimal web " +
       "search and reports which verticals returned data. Costs one request.",
-    parameters: {},
-    examples: ["brave-status:"],
   },
 ];
 
-const serverPrompt: Prompt = {
+const serverPrompt = {
   name: "brave-server-prompt",
   description: "Instructions for using the Brave Search MCP server effectively",
   instructions: `This server provides access to the Brave Search API (api.search.brave.com), including its newer retrieval surfaces: LLM grounding context, GNews, and suggest/spellcheck.
@@ -919,22 +902,23 @@ function plain(s: any): string {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
-async function main() {
-  const apiKey = process.env.BRAVE_SEARCH_API_KEY || process.env.BRAVE_API_KEY;
-  if (!apiKey) {
-    console.error("BRAVE_SEARCH_API_KEY (or BRAVE_API_KEY) environment variable is required");
-    process.exit(1);
-  }
+function toolResult(text: string, bag: Record<string, unknown>, isError = false) {
+  return {
+    ...(isError ? { isError: true as const } : {}),
+    structuredContent: bag,
+    content: [{ type: "text" as const, text, _meta: bag }],
+  };
+}
 
-  console.error("Starting Brave Search MCP Server...");
+function buildServer(apiKey: string): Server {
   const client = new BraveClient(apiKey);
 
   const server = new Server(
     { name: "brave-search-mcp-server", version: "1.2.0" },
     {
       capabilities: {
-        prompts: { default: serverPrompt },
-        resources: { templates: true, read: true },
+        prompts: {},
+        resources: {},
         tools: {},
       },
     },
@@ -953,7 +937,7 @@ async function main() {
   };
 
   // Read resources
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler("resources/read", async (request) => {
     const uri = request.params.uri;
     if (uri === "brave-about:") {
       return {
@@ -992,18 +976,18 @@ async function main() {
     throw new Error(`Unsupported resource URI: ${uri}`);
   });
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  server.setRequestHandler("resources/list", async () => ({
     resources: [
       { uri: "brave-about:", name: "Brave Server Info", mimeType: "application/json" },
       { uri: "brave-status:", name: "Brave Key Status", mimeType: "application/json" },
     ],
   }));
 
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+  server.setRequestHandler("resources/templates/list", async () => ({
     resourceTemplates,
   }));
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     tools: [
       braveWebSearchTool, braveNewsSearchTool, braveVideoSearchTool,
       braveImageSearchTool, bravePlaceSearchTool, bravePoisTool, bravePoiDescriptionsTool,
@@ -1012,12 +996,20 @@ async function main() {
     ],
   }));
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: [serverPrompt],
+  server.setRequestHandler("prompts/list", async () => ({
+    prompts: [{ name: serverPrompt.name, description: serverPrompt.description }],
   }));
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    if (request.params.name === serverPrompt.name) return { prompt: serverPrompt };
+  server.setRequestHandler("prompts/get", async (request) => {
+    if (request.params.name === serverPrompt.name) {
+      return {
+        description: serverPrompt.description,
+        messages: [{
+          role: "user" as const,
+          content: { type: "text" as const, text: serverPrompt.instructions },
+        }],
+      };
+    }
     throw new Error(`Prompt not found: ${request.params.name}`);
   });
 
@@ -1039,7 +1031,7 @@ async function main() {
     }).join("\n");
   };
 
-  server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
+  server.setRequestHandler("tools/call", async (request) => {
     const { name, arguments: args = {} } = request.params;
     const meta = metricsMeta();
     try {
@@ -1074,9 +1066,10 @@ async function main() {
             for (const [k, v] of Object.entries(ib.infobox?.attributes ?? {})) lines.push(`  ${k}: ${v}`);
             parts.push(`\nKnowledge panel:\n${lines.join("\n")}`);
           }
-          return {
-            content: [{ type: "text", text: parts.join("\n"), metadata: { ...meta, raw: data } }],
-          };
+          return toolResult(
+            parts.join("\n"),
+            { ...meta, raw: data },
+          );
         }
         case "brave_news_search": {
           const a: BraveNewsArgs = {
@@ -1104,7 +1097,10 @@ async function main() {
               parts.push(`\nGNews block (${gItems.length}):\n${lines}`);
             }
           }
-          return { content: [{ type: "text", text: parts.join("\n"), metadata: { ...meta, raw: data } }] };
+          return toolResult(
+            parts.join("\n"),
+            { ...meta, raw: data },
+          );
         }
         case "brave_video_search": {
           const a: BraveVideoArgs = {
@@ -1123,7 +1119,10 @@ async function main() {
             const creator = r.creator?.name ?? v.creator ?? v.author;
             return [dur ? `duration: ${dur}` : "", creator ? `by ${creator}` : ""];
           })}`;
-          return { content: [{ type: "text", text, metadata: { ...meta, raw: data } }] };
+          return toolResult(
+            text,
+            { ...meta, raw: data },
+          );
         }
         case "brave_image_search": {
           const a: BraveImageArgs = {
@@ -1147,7 +1146,10 @@ async function main() {
             im.source ? `source: ${plain(im.source)}` : "",
             dims(im),
           ] as string[])}`;
-          return { content: [{ type: "text", text, metadata: { ...meta, raw: data } }] };
+          return toolResult(
+            text,
+            { ...meta, raw: data },
+          );
         }
         case "brave_place_search": {
           const a: BravePlaceArgs = {
@@ -1209,7 +1211,10 @@ async function main() {
               return bits.join("\n");
             }).join("\n"),
           ];
-          return { content: [{ type: "text", text: parts.join("\n"), metadata: { ...meta, raw: data } }] };
+          return toolResult(
+            parts.join("\n"),
+            { ...meta, raw: data },
+          );
         }
         case "brave_pois": {
           const ids: string[] = pick(args, "ids", "array") ?? [];
@@ -1242,13 +1247,10 @@ async function main() {
             if (Array.isArray(pics) && pics.length) bits.push(`   ${pics.length} picture(s)`);
             return bits.join("\n");
           });
-          return {
-            content: [{
-              type: "text",
-              text: `${results.length} place detail record(s):\n${lines.join("\n") || "  (none)"}`,
-              metadata: { ...meta, raw: data },
-            }],
-          };
+          return toolResult(
+            `${results.length} place detail record(s):\n${lines.join("\n") || "  (none)"}`,
+            { ...meta, raw: data },
+          );
         }
         case "brave_poi_descriptions": {
           const ids: string[] = pick(args, "ids", "array") ?? [];
@@ -1259,13 +1261,10 @@ async function main() {
           const results: any[] = data?.results ?? [];
           const lines = results.map((r, i) =>
             `${i + 1}. ${plain(r.title ?? "") || (r.id ?? "(unnamed)")}: ${clean(r.description) || "(no description)"}`);
-          return {
-            content: [{
-              type: "text",
-              text: `${results.length} place description(s):\n${lines.join("\n") || "  (none)"}`,
-              metadata: { ...meta, raw: data },
-            }],
-          };
+          return toolResult(
+            `${results.length} place description(s):\n${lines.join("\n") || "  (none)"}`,
+            { ...meta, raw: data },
+          );
         }
         case "brave_rich_search": {
           const a: BraveRichArgs = { query: requiredStr(args, "query", "brave_rich_search") };
@@ -1274,7 +1273,10 @@ async function main() {
           // Emit the vertical payload in a readable + machine-usable form.
           const text = `Rich search: ${a.query}  ·  vertical: ${data.vertical ?? "unknown"}\n\n` +
             `JSON payload:\n${JSON.stringify(results, null, 2)}`;
-          return { content: [{ type: "text", text, metadata: { ...meta, raw: data, vertical: data.vertical } }] };
+          return toolResult(
+            text,
+            { ...meta, raw: data, vertical: data.vertical },
+          );
         }
         case "brave_llm_context": {
           const query = requiredStr(args, "query", "brave_llm_context");
@@ -1317,9 +1319,10 @@ async function main() {
             }).join("\n");
             parts.push(`\nSources (first ${Math.min(Object.keys(sources).length, 10)}):\n${srcLines}`);
           }
-          return {
-            content: [{ type: "text", text: parts.join("\n"), metadata: { ...meta, raw: data, sources } }],
-          };
+          return toolResult(
+            parts.join("\n"),
+            { ...meta, raw: data, sources },
+          );
         }
         case "brave_suggest": {
           const a: BraveSuggestArgs = {
@@ -1337,9 +1340,10 @@ async function main() {
             const t = typeof s === "string" ? s : (s?.title ?? s?.suggestion ?? s?.query ?? JSON.stringify(s));
             return `${i + 1}. ${plain(t)}`;
           }).join("\n");
-          return {
-            content: [{ type: "text", text: `${suggestions.length} suggestion(s):\n${lines || "(none)"}`, metadata: { ...meta, raw: data } }],
-          };
+          return toolResult(
+            `${suggestions.length} suggestion(s):\n${lines || "(none)"}`,
+            { ...meta, raw: data },
+          );
         }
         case "brave_spellcheck": {
           const a = { query: requiredStr(args, "query", "brave_spellcheck") };
@@ -1354,9 +1358,10 @@ async function main() {
           const text = corrected
             ? `Spellcheck "${a.query}" → "${corrected}" (${verdict})`
             : "No corrected form returned; using the original query.";
-          return {
-            content: [{ type: "text", text, metadata: { ...meta, raw: data, corrected } }],
-          };
+          return toolResult(
+            text,
+            { ...meta, raw: data, corrected },
+          );
         }
         default:
           throw new Error(`Unknown tool: ${name}`);
@@ -1365,25 +1370,40 @@ async function main() {
       const message = error instanceof BraveApiError ? error.message : (error instanceof Error ? error.message : String(error));
       const category = error instanceof BraveApiError ? error.category : "error";
       console.error("Error executing tool:", error);
-      // Spec-compliant tool error: isError: true plus the machine-readable
-      // category in metadata.
-      return {
-        isError: true,
-        content: [{
-          type: "text",
-          text: JSON.stringify({ error: message, category }, null, 2),
-          metadata: { error: true, category, ...meta },
-        }],
-      };
+      // Spec-compliant tool error: isError plus the bag on structuredContent
+      // and content[0]._meta (category, apiMetrics).
+      return toolResult(
+        JSON.stringify({ error: message, category }, null, 2),
+        { error: true, category, ...meta },
+        true,
+      );
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
+}
+
+function main(): void {
+  const apiKey = process.env.BRAVE_SEARCH_API_KEY || process.env.BRAVE_API_KEY;
+  if (!apiKey) {
+    console.error("BRAVE_SEARCH_API_KEY (or BRAVE_API_KEY) environment variable is required");
+    process.exit(1);
+  }
+  console.error("Starting Brave Search MCP Server...");
+  // Missing-key exit stays above serveStdio: `node build/index.js` with no
+  // key must exit 1. The API client is built inside the factory, once per
+  // stdio connection. Default legacy mode is 'serve' (initialize still works).
+  serveStdio(() => buildServer(apiKey), {
+    onerror(error) {
+      console.error("MCP stdio error:", error instanceof Error ? error.message : String(error));
+    },
+  });
   console.error("Brave Search MCP Server running on stdio");
 }
 
-main().catch((error: unknown) => {
+try {
+  main();
+} catch (error: unknown) {
   console.error("Fatal error in main():", error instanceof Error ? error.message : String(error));
   process.exit(1);
-});
+}

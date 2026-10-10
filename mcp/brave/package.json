@@ -19,10 +19,11 @@
     "start": "bun build/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "0.6.0"
+    "@modelcontextprotocol/server": "2.3.1"
   },
   "devDependencies": {
-    "@types/node": "^20.17.9",
-    "typescript": "^5.3.3"
+    "@modelcontextprotocol/client": "2.3.1",
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
   }
 }

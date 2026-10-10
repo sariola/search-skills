@@ -130,7 +130,7 @@ bun probe.mjs        # deeper: web extra snippets, freshness, image filters,
 
 - Rate limiting: the client serializes all API calls and throttles toward a
   conservative hourly budget (Brave's free plan is capped by the *month*); each
-  tool response carries `apiMetrics`.
+  tool response carries `apiMetrics` on `structuredContent` and `content[0]._meta`.
 - Auth errors: a 401 or an `error.code = SUBSCRIPTION_TOKEN_INVALID` body is
   surfaced as `category: "auth"`; a 422 validation error as `"bad_request"`;
   429 as `"rate_limit"`.
