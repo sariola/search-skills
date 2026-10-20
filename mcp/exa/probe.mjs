@@ -79,10 +79,35 @@ ok = (await call("exa_fetch", {
   urls: ["https://exa.ai/"], withText: true, textMaxCharacters: 800, links: 3, withHighlights: true,
 }, "fetch(text-object + extras.links + highlights)")).passed && ok;
 
-// Negative: bad searchType enum should be a client-side bad_request.
-ok = (await call("exa_search", { query: "x", searchType: "hybrid" }, "search(bad searchType → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+// Exa 3.0: lite is cached and rejects summary; dynamic highlights send the beta header.
+ok = (await call("exa_search", {
+  query: "household solar installation cost",
+  searchType: "lite",
+  numResults: 3,
+  withHighlights: true,
+  highlightsDynamic: true,
+  objective: "Prefer recent government or utility figures",
+  userLocation: { country: "US", latitude: 37.7, longitude: -122.4 },
+}, "search(lite + dynamic highlights + location)")).passed && ok;
+
+ok = (await call("exa_fetch", {
+  urls: ["https://exa.ai/"],
+  snapshotAsOf: "2026-01-15",
+  withHighlights: true,
+  highlightsVerbosity: "low",
+}, "fetch(snapshotAsOf + highlight verbosity)")).passed && ok;
+
+// Negative: lite rejects summary client-side, before the wire call.
+ok = (await call("exa_search", { query: "x", searchType: "lite", withSummary: true }, "search(lite + summary → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+// Negative: coordinates must be a pair in range.
+ok = (await call("exa_search", { query: "x", userLocation: { latitude: 91, longitude: 0 } }, "search(bad latitude → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
 // Negative: date filter on entity category should be rejected client-side.
 ok = (await call("exa_search", { query: "x", category: "company", startPublishedDate: "2024-01-01T00:00:00Z" }, "search(company + date → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_search_lite", { query: "x", withSummary: true }, "search_lite(summary → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_fetch_snapshot", { urls: ["https://example.com"] }, "fetch_snapshot(no date → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_search_near", { query: "x" }, "search_near(no location → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_agent", { query: "x", maxDurationSeconds: 300 }, "agent(duration without ultra → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_search", { query: "x", requestTimeout: 0 }, "search(requestTimeout 0 → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
 
 // ---- Agent: top-level body, then chain / stop / events / list ---------------
 // A cheap low-effort run. If it completes (or even plan-gates) we get a run id

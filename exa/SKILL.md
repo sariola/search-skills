@@ -34,6 +34,7 @@ from an event loop; `await` alone does not provide concurrency.
 | Need | Operation |
 |---|---|
 | Ranked pages or papers | `search(query, ...)` → `SearchResults` |
+| Cheap cached lookup | `search(query, mode="lite", ...)` |
 | Compact evidence for a model | `brief(query, ...)` or `results.to_agent()` |
 | Readable search results | `run(query, ...)` |
 | Read a known source | `fetch(urls=[url], include_meta=True, max_characters=6000)` |
@@ -55,12 +56,19 @@ requests; `num_results` is per query, not a total budget.
 1. Identify the question's scope: entity, time interval, geography, and required
    evidence. Add domain or publication-date filters when they express that scope.
 2. Choose a category through `mode`: `paper`, `code`/`github`, `company`,
-   `financial`, `people`, `personal-site`, `publication`, `news`, or `auto`.
+   `financial`, `people`, `personal-site`, `publication`, `news`, `lite`, or `auto`.
+   `lite` is cached-only and rejects freshness, summaries, and synthesis.
    `lead` and `websets` search modes are company-page searches; they do not
    create persistent Websets. For mode constraints, read [usage.md](references/usage.md).
 3. Request highlights to triage, then fetch the strongest primary sources.
-   Inspect per-URL errors and truncation. An empty excerpt is not proof that
-   the page lacks the answer. A generated summary is not a quotation.
+   `highlights_dynamic=True` shares one excerpt budget across the set.
+   `snapshot_as_of` reads a stored page. `search_lite`, `search_near`, and
+   `fetch_snapshot` are the same calls with the type, location, or snapshot
+   fixed. `RequestTimeout` and `CancelToken` / `RequestScope` bound or abort a
+   call (`ExaTimeoutError.phase`, `ExaCancelledError`). Show `results.notices` with the hits;
+   `results.warnings` are diagnostics. Inspect per-URL errors and truncation.
+   An empty excerpt is not proof that the page lacks the answer. A generated
+   summary is not a quotation.
 4. Resolve important disagreements against the source material. A second engine
    can reveal missing sources, but two engines returning the same page are not
    independent corroboration. Stop when the requested claims are supported or

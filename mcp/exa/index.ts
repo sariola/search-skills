@@ -30,20 +30,58 @@
 // No credentials are ever printed.
 // ---------------------------------------------------------------------------
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Server, type Tool } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
+
+// Per tools/call: HTTP timeout and the MCP notifications/cancelled signal.
+// The rate limiter re-enters this store when the queued request actually runs.
+interface CallControl {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+const callControl = new AsyncLocalStorage<CallControl>();
+
+function throwIfCancelled(where: string): void {
+  if (callControl.getStore()?.signal?.aborted) {
+    throw new ExaApiError(`${where} cancelled.`, "cancelled", 499);
+  }
+}
 
 const API_BASE = "https://api.exa.ai";
 const WEBSETS_BASE = "https://api.exa.ai/websets";
 
 // Authoritative Exa enums (from the public OpenAPI).
-const SEARCH_TYPES = ["instant", "fast", "auto", "deep-lite", "deep", "deep-reasoning"] as const;
+const SEARCH_TYPES = ["lite", "auto", "deep", "deep-lite", "instant", "fast", "deep-reasoning"] as const;
+// OpenAPI marks these legacy. They still work; new requests should use the replacement.
+const LEGACY_SEARCH_TYPES: Record<string, string> = {
+  instant: "lite",
+  fast: "lite",
+  "deep-reasoning": "deep",
+};
+// type is an open enum. Recommended values are listed; any other non-empty string is sent through.
 const CATEGORIES = ["company", "publication", "news", "personal site", "financial report", "people"] as const;
-const AGENT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "auto", "max"] as const;
+const AGENT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "ultra", "auto", "max"] as const;
 const TEXT_VERBOSITIES = ["compact", "standard", "full"] as const;
-// The company/people entity-backed categories reject date filters and
-// domain exclusion (the API returns 400).
-const ENTITY_CATEGORIES = new Set(["company", "people"]);
+const HIGHLIGHT_VERBOSITIES = ["low", "medium", "high"] as const;
+// Dynamic Highlights and highlight verbosity still require this beta header
+// (OpenAPI). The Exa 3.0 blog calls the feature generally available; the spec
+// rejects the request without the header, so it is sent only when those fields are set.
+const DYNAMIC_HIGHLIGHTS_BETA = "dynamic-highlights-2026-08-28";
+const LITE_TOP_LEVEL = new Set([
+  "query", "type", "objective", "userIdentifier", "category", "numResults",
+  "contents", "userLocation", "includeDomains", "excludeDomains",
+  "startPublishedDate", "endPublishedDate", "moderation", "compliance",
+]);
+const LITE_CONTENTS = new Set(["highlights", "text", "snapshotAsOf"]);
+// Parameters the dedicated lite tool refuses even if a caller passes them.
+const LITE_BANNED = [
+  "withSummary", "summaryQuery", "maxAgeHours", "outputSchema", "systemPrompt",
+  "additionalQueries", "searchType", "links", "imageLinks",
+];
+// company and people reject published-date filters. Only people also rejects
+// excludeDomains (the API returns 400).
+const DATE_REJECTING_CATEGORIES = new Set(["company", "people"]);
 // Agent run stop reasons (OpenAPI AgentStopReason). The probe live-verifies
 // which the API actually accepts on a running run.
 const AGENT_STOP_REASONS = ["schema_satisfied", "budget_reached", "stopped", "error", "cancelled"] as const;
@@ -95,6 +133,7 @@ class RateLimiter {
 
   async enqueue<T>(fn: () => Promise<T>, operation?: string): Promise<T> {
     const queuePosition = this.queue.length;
+    const store = callControl.getStore();
     // stdout is the JSON-RPC framing channel for a stdio MCP server — log to
     // stderr (console.error) or the line reader chokes on every API call.
     console.error(`[Exa API] Enqueueing request${operation ? ` for ${operation}` : ""} (queue: ${queuePosition})`);
@@ -102,8 +141,9 @@ class RateLimiter {
       this.queue.push(async () => {
         this.lifetimeRequests++; // count every attempt, success or failure
         const startedAt = Date.now(); // flight start — excludes queue wait
+        const run = () => fn();
         try {
-          const result = await fn();
+          const result = store ? await callControl.run(store, run) : await run();
           resolve(result);
         } catch (error) {
           console.error(`[Exa API] Error in request${operation ? ` for ${operation}` : ""}: `, error);
@@ -191,17 +231,42 @@ class ExaClient {
     opts: { json?: any; base?: string; timeoutMs?: number; idempotent?: boolean; extraHeaders?: Record<string, string> } = {},
   ): Promise<any> {
     const { json, base = API_BASE, timeoutMs = 45000, idempotent = method.toUpperCase() === "GET", extraHeaders } = opts;
+    const control = callControl.getStore();
+    const limitMs = control?.timeoutMs ?? timeoutMs;
+    const signals: AbortSignal[] = [];
+    if (limitMs > 0) signals.push(AbortSignal.timeout(limitMs));
+    if (control?.signal) signals.push(control.signal);
+    const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
     const url = `${base}${path}`;
-    const resp = await fetch(url, {
-      method,
-      headers: {
-        "x-api-key": this.apiKey,
-        "Content-Type": "application/json",
-        ...(extraHeaders ?? {}),
-      },
-      body: json === undefined ? undefined : JSON.stringify(json),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method,
+        headers: {
+          "x-api-key": this.apiKey,
+          "Content-Type": "application/json",
+          ...(extraHeaders ?? {}),
+        },
+        body: json === undefined ? undefined : JSON.stringify(json),
+        signal,
+      });
+    } catch (error) {
+      if (control?.signal?.aborted) {
+        throw new ExaApiError("Exa request cancelled.", "cancelled", 499);
+      }
+      const name = error instanceof Error ? error.name : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new ExaApiError(
+          `Exa request to ${path} timed out after ${limitMs}ms.`,
+          "timeout",
+          408,
+        );
+      }
+      throw new ExaApiError(
+        `Exa request to ${path} failed at the transport level (${error instanceof Error ? error.message : error}).`,
+        "http",
+      );
+    }
     let data: any = undefined;
     const text = await resp.text();
     if (text) {
@@ -292,22 +357,18 @@ class ExaClient {
     if (args.includeDomains) body.includeDomains = args.includeDomains;
     if (args.excludeDomains) body.excludeDomains = args.excludeDomains;
     if (args.userLocation) body.userLocation = args.userLocation;
+    if (args.objective) body.objective = args.objective;
+    if (args.userIdentifier) body.userIdentifier = args.userIdentifier;
+    if (args.systemPrompt) body.systemPrompt = args.systemPrompt;
+    if (args.additionalQueries) body.additionalQueries = args.additionalQueries;
+    if (args.moderation) body.moderation = true;
+    if (args.compliance) body.compliance = args.compliance;
 
-    // content options live under `contents` (ContentsOptions on /search).
     const contents: any = {};
-    if (args.withHighlights) {
-      contents.highlights = args.highlightsQuery ? { query: args.highlightsQuery } : true;
-    }
-    if (args.withText || args.textMaxCharacters || args.textVerbosity) {
-      if (args.withText && !args.textMaxCharacters && !args.textVerbosity) {
-        contents.text = true;
-      } else {
-        const t: any = {};
-        if (args.textMaxCharacters) t.maxCharacters = args.textMaxCharacters;
-        if (args.textVerbosity) t.verbosity = args.textVerbosity;
-        contents.text = t;
-      }
-    }
+    const highlights = buildHighlights(args);
+    if (highlights !== undefined) contents.highlights = highlights;
+    const text = buildText(args);
+    if (text !== undefined) contents.text = text;
     if (args.withSummary) {
       contents.summary = args.summaryQuery ? { query: args.summaryQuery } : true;
     }
@@ -315,11 +376,15 @@ class ExaClient {
     if (args.links) extras.links = args.links;
     if (args.imageLinks) extras.imageLinks = args.imageLinks;
     if (Object.keys(extras).length) contents.extras = extras;
+    if (args.maxAgeHours !== undefined && args.maxAgeHours !== null) contents.maxAgeHours = args.maxAgeHours;
+    if (args.snapshotAsOf) contents.snapshotAsOf = args.snapshotAsOf;
     if (Object.keys(contents).length) body.contents = contents;
 
     if (args.outputSchema) body.outputSchema = args.outputSchema;
+    assertLiteSearch(body);
     return this.rateLimiter.enqueue(
-      () => this.post("/search", body, { timeoutMs: 45000 }), "exa_search");
+      () => this.post("/search", body, { timeoutMs: 45000, extraHeaders: dynamicHighlightsHeaders(contents) }),
+      "exa_search");
   }
 
   fetch(args: ExaFetchArgs) {
@@ -338,7 +403,8 @@ class ExaClient {
         body.text = t;
       }
     }
-    if (args.withHighlights) body.highlights = args.highlightsQuery ? { query: args.highlightsQuery } : true;
+    const highlights = buildHighlights(args);
+    if (highlights !== undefined) body.highlights = highlights;
     if (args.withSummary) body.summary = args.summaryQuery ? { query: args.summaryQuery } : true;
     const extras: any = {};
     if (args.links) extras.links = args.links;
@@ -347,8 +413,11 @@ class ExaClient {
     if (args.subpages) body.subpages = args.subpages;
     if (args.subpageTarget) body.subpageTarget = args.subpageTarget;
     if (args.maxAgeHours !== undefined && args.maxAgeHours !== null) body.maxAgeHours = args.maxAgeHours;
+    if (args.snapshotAsOf) body.snapshotAsOf = args.snapshotAsOf;
+    if (args.userIdentifier) body.userIdentifier = args.userIdentifier;
     return this.rateLimiter.enqueue(
-      () => this.post("/contents", body, { timeoutMs: 60000 }), "exa_fetch");
+      () => this.post("/contents", body, { timeoutMs: 60000, extraHeaders: dynamicHighlightsHeaders(body) }),
+      "exa_fetch");
   }
 
   answer(args: ExaAnswerArgs) {
@@ -356,6 +425,7 @@ class ExaClient {
     if (args.outputSchema) body.outputSchema = args.outputSchema;
     if (args.systemPrompt) body.systemPrompt = args.systemPrompt;
     if (args.userLocation) body.userLocation = args.userLocation;
+    if (args.userIdentifier) body.userIdentifier = args.userIdentifier;
     return this.rateLimiter.enqueue(
       () => this.post("/answer", body, { timeoutMs: 90000 }), "exa_answer");
   }
@@ -368,9 +438,13 @@ class ExaClient {
     if (args.effort) body.effort = args.effort;
     if (args.systemPrompt) body.systemPrompt = args.systemPrompt;
     if (args.outputSchema) body.outputSchema = args.outputSchema;
-    if (args.maxCostDollars) body.budget = { maxCostDollars: args.maxCostDollars };
+    const budget: Record<string, number> = {};
+    if (args.maxCostDollars !== undefined) budget.maxCostDollars = args.maxCostDollars;
+    if (args.maxDurationSeconds !== undefined) budget.maxDurationSeconds = args.maxDurationSeconds;
+    if (Object.keys(budget).length) body.budget = budget;
     if (args.previousRunId) body.previousRunId = args.previousRunId;
     if (args.metadata) body.metadata = args.metadata;
+    if (args.userIdentifier) body.userIdentifier = args.userIdentifier;
     if (args.dataSources && args.dataSources.length) {
       body.dataSources = args.dataSources.map((p) => ({ provider: p }));
     }
@@ -386,6 +460,7 @@ class ExaClient {
     // Terminal statuses: completed | failed | cancelled.
     // In-flight statuses: queued | running.
     while (Date.now() < deadline) {
+      throwIfCancelled(`Exa agent run ${runId}`);
       last = await this.rateLimiter.enqueue(
         () => this.get(`/agent/runs/${runId}`, API_BASE, 45000), "exa_agent:poll");
       if (["completed", "failed", "cancelled"].includes(last?.status)) break;
@@ -501,7 +576,25 @@ class ExaClient {
   // header) and parse the JSONL, keyed by customId. Done server-side because a
   // model cannot reliably fetch a presigned URL inside a tool call.
   async batchDownloadResults(resultsUrl: string): Promise<{ results: Record<string, any>; lines: any[] }> {
-    const resp = await fetch(resultsUrl, { redirect: "follow", signal: AbortSignal.timeout(60000) });
+    const control = callControl.getStore();
+    const signals: AbortSignal[] = [AbortSignal.timeout(control?.timeoutMs ?? 60000)];
+    if (control?.signal) signals.push(control.signal);
+    const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+    let resp: Response;
+    try {
+      resp = await fetch(resultsUrl, { redirect: "follow", signal });
+    } catch (error) {
+      if (control?.signal?.aborted) {
+        throw new ExaApiError("Batch results download cancelled.", "cancelled", 499);
+      }
+      const name = error instanceof Error ? error.name : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new ExaApiError("Batch results download timed out.", "timeout", 408);
+      }
+      throw new ExaApiError(
+        `Batch results download failed (${error instanceof Error ? error.message : String(error)}).`,
+        "http");
+    }
     if (!resp.ok) {
       throw new ExaApiError(`Batch results download failed (HTTP ${resp.status}).`, "server", resp.status);
     }
@@ -526,6 +619,7 @@ class ExaClient {
     const deadline = Date.now() + timeoutSec * 1000;
     let snap: any = await this.batchGet(batchId);
     while (Date.now() < deadline && (snap?.status ?? "") === "in_progress") {
+      throwIfCancelled(`Batch ${batchId}`);
       await new Promise((r) => setTimeout(r, 3000));
       snap = await this.batchGet(batchId);
     }
@@ -600,6 +694,7 @@ class ExaClient {
     const deadline = Date.now() + timeoutSec * 1000;
     let ws: any = { id };
     while (Date.now() < deadline) {
+      throwIfCancelled(`Webset ${id}`);
       ws = await this.websetGetRaw(id);
       const searches: any[] = ws?.searches ?? [];
       const terminal = (ws?.status ?? "") === "paused" || (ws?.status ?? "") === "cancelled"
@@ -628,6 +723,7 @@ class ExaClient {
     if (args.wait) {
       const deadline = Date.now() + (args.timeoutSec ?? 60) * 1000;
       while (Date.now() < deadline) {
+        throwIfCancelled(`Webset ${id}`);
         ws = await this.websetGetRaw(id);
         const searches: any[] = ws?.searches ?? [];
         if ((ws?.status ?? "") === "paused" || (ws?.status ?? "") === "cancelled"
@@ -727,8 +823,17 @@ class ExaClient {
     if (args.excludeDomains) body.excludeDomains = args.excludeDomains;
     if (args.startPublishedDate) body.startPublishedDate = args.startPublishedDate;
     if (args.endPublishedDate) body.endPublishedDate = args.endPublishedDate;
+    const contents: any = {};
+    const highlights = buildHighlights(args);
+    if (highlights !== undefined) contents.highlights = highlights;
+    const text = buildText(args);
+    if (text !== undefined) contents.text = text;
+    if (args.maxAgeHours !== undefined && args.maxAgeHours !== null) contents.maxAgeHours = args.maxAgeHours;
+    if (args.snapshotAsOf) contents.snapshotAsOf = args.snapshotAsOf;
+    if (Object.keys(contents).length) body.contents = contents;
     return this.rateLimiter.enqueue(
-      () => this.post("/findSimilar", body, { timeoutMs: 45000 }), "exa_find_similar");
+      () => this.post("/findSimilar", body, { timeoutMs: 45000, extraHeaders: dynamicHighlightsHeaders(contents) }),
+      "exa_find_similar");
   }
 
   team() {
@@ -773,10 +878,15 @@ class ExaClient {
   }
 
   // ---- search-change monitors (api.exa.ai/monitors) -----------------------
-  monitorCreate(args: { query: string; webhookUrl: string; name?: string; period?: string; numResults?: number; outputSchema?: object; metadata?: any; events?: string[]; search?: any }) {
+  monitorCreate(args: { query: string; webhookUrl: string; name?: string; period?: string; numResults?: number; outputSchema?: object; metadata?: any; events?: string[]; search?: any; filterEmptyResults?: boolean }) {
     const search: any = { query: args.query };
     if (args.numResults !== undefined) search.numResults = args.numResults;
     if (args.search && typeof args.search === "object") Object.assign(search, args.search);
+    // SearchMonitorContents puts filterEmptyResults inside contents, not on the search object.
+    if (args.filterEmptyResults || search.filterEmptyResults) {
+      search.contents = { ...(search.contents ?? {}), filterEmptyResults: true };
+      delete search.filterEmptyResults;
+    }
     const body: any = {
       search,
       trigger: { type: "interval", period: args.period ?? "24h" },
@@ -787,7 +897,11 @@ class ExaClient {
     if (args.metadata) body.metadata = args.metadata;
     if (args.events && args.events.length) body.webhook.events = args.events;
     return this.rateLimiter.enqueue(
-      () => this.post("/monitors", body, { timeoutMs: 45000, idempotent: false }), "exa_monitor_create");
+      () => this.post("/monitors", body, {
+        timeoutMs: 45000,
+        idempotent: false,
+        extraHeaders: dynamicHighlightsHeaders(search.contents),
+      }), "exa_monitor_create");
   }
 
   monitorList(args: { status?: string; name?: string; metadata?: Record<string, string>; limit?: number; cursor?: string } = {}) {
@@ -1086,9 +1200,18 @@ interface ExaSearchArgs {
   endPublishedDate?: string;
   includeDomains?: string[];
   excludeDomains?: string[];
-  userLocation?: string;
+  userLocation?: string | Record<string, unknown>;
+  objective?: string;
+  userIdentifier?: string;
+  systemPrompt?: string;
+  additionalQueries?: string[];
+  moderation?: boolean;
+  compliance?: string;
   withHighlights?: boolean;
   highlightsQuery?: string;
+  highlightsMaxCharacters?: number;
+  highlightsDynamic?: boolean;
+  highlightsVerbosity?: string;
   withText?: boolean;
   textMaxCharacters?: number;
   textVerbosity?: string;
@@ -1096,6 +1219,8 @@ interface ExaSearchArgs {
   summaryQuery?: string;
   links?: number;
   imageLinks?: number;
+  maxAgeHours?: number;
+  snapshotAsOf?: string;
   outputSchema?: object;
 }
 interface ExaFetchArgs {
@@ -1106,6 +1231,9 @@ interface ExaFetchArgs {
   withText?: boolean;
   withHighlights?: boolean;
   highlightsQuery?: string;
+  highlightsMaxCharacters?: number;
+  highlightsDynamic?: boolean;
+  highlightsVerbosity?: string;
   withSummary?: boolean;
   summaryQuery?: string;
   links?: number;
@@ -1113,13 +1241,16 @@ interface ExaFetchArgs {
   subpages?: number;
   subpageTarget?: string;
   maxAgeHours?: number;
+  snapshotAsOf?: string;
+  userIdentifier?: string;
 }
 interface ExaAnswerArgs {
   query: string;
   text?: boolean;
   outputSchema?: object;
   systemPrompt?: string;
-  userLocation?: string;
+  userLocation?: string | Record<string, unknown>;
+  userIdentifier?: string;
 }
 interface ExaAgentArgs {
   query: string;
@@ -1127,12 +1258,14 @@ interface ExaAgentArgs {
   systemPrompt?: string;
   outputSchema?: object;
   maxCostDollars?: number;
+  maxDurationSeconds?: number;
   timeout?: number;
   previousRunId?: string;
   metadata?: Record<string, string>;
   data?: Record<string, any>[];
   exclusion?: Record<string, any>[];
   dataSources?: string[];
+  userIdentifier?: string;
 }
 interface ExaWebsetCreateArgs {
   query: string;
@@ -1159,6 +1292,16 @@ interface ExaFindSimilarArgs {
   excludeDomains?: string[];
   startPublishedDate?: string;
   endPublishedDate?: string;
+  withHighlights?: boolean;
+  highlightsQuery?: string;
+  highlightsMaxCharacters?: number;
+  highlightsDynamic?: boolean;
+  highlightsVerbosity?: string;
+  withText?: boolean;
+  textMaxCharacters?: number;
+  textVerbosity?: string;
+  maxAgeHours?: number;
+  snapshotAsOf?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1169,14 +1312,11 @@ interface ExaFindSimilarArgs {
 const exaSearchTool: Tool = {
   name: "exa_search",
   description:
-    "Searches the web via Exa using flexible criteria. Supports filtering by " +
-    "any combination of: search depth (searchType: instant=fastest, fast, " +
-    "auto=balanced default, deep-lite, deep, deep-reasoning=deepest), vertical " +
-    "(category: company, publication, news, personal site, financial report, " +
-    "people; other strings act as hints), published-date range, domain " +
-    "include/exclude, location, and per-result content (highlights, text, " +
-    "summary, links). Returns up to 10 results by default (configurable via " +
-    "numResults).",
+    "Searches the web via Exa. searchType lite=low-cost cached ($4/1k, rejects " +
+    "freshness/summary/synthesis), auto=balanced default ($7/1k), deep=multi-step " +
+    "synthesis; instant/fast/deep-reasoning are legacy. Also category, published " +
+    "dates, domains, userLocation (country or lat/long), objective, dynamic " +
+    "highlights, and snapshotAsOf. Returns up to 10 results by default.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1185,17 +1325,18 @@ const exaSearchTool: Tool = {
       searchType: {
         type: "string",
         description:
-          "Search depth (instant=minimum latency, fast=reduced latency, " +
-          "auto=balanced, deep-lite=lightweight research ~4s, deep=multi-step " +
-          "research with synthesis, deep-reasoning=stronger reasoning) " +
-          "(default: auto)",
+          "Search mode (default: auto). Recommended: lite (cached, $4/1k, limited " +
+          "parameters), auto ($7/1k), deep. Also deep-lite. Legacy: instant and " +
+          "fast (use lite), deep-reasoning (use deep). Any other non-empty string " +
+          "is sent through.",
       },
       category: {
         type: "string",
         description:
           "Vertical to focus on (company, publication, news, personal site, " +
           "financial report, people; other strings act as hints). company and " +
-          "people do not support published-date filters or excludeDomains.",
+          "people do not support published-date filters. people also does not " +
+          "support excludeDomains.",
       },
       startPublishedDate: {
         type: "string",
@@ -1215,13 +1356,91 @@ const exaSearchTool: Tool = {
         items: { type: "string" },
         description: "Exclude these domains/paths",
       },
-      userLocation: { type: "string", description: "2-letter ISO country code (e.g. 'US')" },
+      userLocation: {
+        description:
+          "Bias results to the end user. A 2-letter ISO country code, or " +
+          "{country?, latitude, longitude}. Coordinates are for 'near me' queries " +
+          "and do not set a country by themselves.",
+        anyOf: [
+          { type: "string" },
+          {
+            type: "object",
+            properties: {
+              country: { type: "string" },
+              latitude: { type: "number", minimum: -90, maximum: 90 },
+              longitude: { type: "number", minimum: -180, maximum: 180 },
+            },
+            additionalProperties: false,
+          },
+        ],
+      },
+      objective: {
+        type: "string",
+        maxLength: 4096,
+        description:
+          "Goal for this search turn; say which documents should rank first, " +
+          "which should be excluded, and what facts to pull (max 4096).",
+      },
+      userIdentifier: {
+        type: "string",
+        description:
+          "Opaque end-user id (1-64 letters, digits, underscore, hyphen). No " +
+          "email, phone, or name. Does not change results.",
+      },
+      moderation: { type: "boolean", description: "Filter unsafe content (default: false)" },
+      compliance: {
+        type: "string",
+        enum: ["hipaa"],
+        description: "Enterprise compliance mode. hipaa requires cache-only retrieval.",
+      },
+      systemPrompt: {
+        type: "string",
+        description: "Guidance for synthesized output. Rejected by searchType lite.",
+      },
+      additionalQueries: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 10,
+        description: "Extra queries for deep, deep-lite, or deep-reasoning only (1-10).",
+      },
       withHighlights: { type: "boolean", description: "Return query-relevant highlight snippets (default: false)" },
-      highlightsQuery: { type: "string", description: "Guide which highlights are picked (with withHighlights)" },
+      highlightsQuery: { type: "string", description: "Guide which highlights are picked" },
+      highlightsMaxCharacters: {
+        type: "number",
+        description: "Cap highlight text per URL, 1-1000000. Not compatible with highlightsDynamic.",
+      },
+      highlightsDynamic: {
+        type: "boolean",
+        description:
+          "Dynamic Highlights: one shared context budget across the result set " +
+          "(default: false). Sends Exa-Beta dynamic-highlights-2026-08-28. Not " +
+          "compatible with highlightsMaxCharacters.",
+      },
+      highlightsVerbosity: {
+        type: "string",
+        enum: ["low", "medium", "high"],
+        description:
+          "Highlight length preset (low|medium|high). With highlightsDynamic the " +
+          "budget is shared. Requires the dynamic-highlights beta header, sent " +
+          "automatically. Not compatible with highlightsMaxCharacters.",
+      },
       withText: { type: "boolean", description: "Return full page text (default: false)" },
-      textMaxCharacters: { type: "number", description: "Cap page text at N characters, 1-10000 (with withText)" },
-      textVerbosity: { type: "string", description: "Text rendering (compact | standard | full, default: full; with withText)" },
-      withSummary: { type: "boolean", description: "Return a per-result summary (default: false)" },
+      textMaxCharacters: { type: "number", description: "Cap page text at N characters, 1-1000000 (with withText)" },
+      maxAgeHours: {
+        type: "number",
+        description:
+          "Max cached-content age in hours, -1..720. 0 always fetches fresh, -1 " +
+          "is cache only. Rejected by searchType lite.",
+      },
+      snapshotAsOf: {
+        type: "string",
+        description:
+          "Return the stored page as of this ISO date (YYYY-MM-DD) or date-time. " +
+          "Never live-fetches. Allowed on lite.",
+      },
+      textVerbosity: { type: "string", description: "Text rendering (compact | standard | full; with withText)" },
+      withSummary: { type: "boolean", description: "Return a per-result summary (default: false). Rejected by searchType lite." },
       summaryQuery: { type: "string", description: "Guide the per-result summary (with withSummary)" },
       links: { type: "number", description: "Outbound links per result, 0-1000 (default: 0)" },
       imageLinks: { type: "number", description: "Image URLs per result, 0-1000 (default: 0)" },
@@ -1260,16 +1479,28 @@ const exaFetchTool: Tool = {
       },
       withText: { type: "boolean", description: "Return full page text (default: false)" },
       textVerbosity: { type: "string", description: "Text rendering (compact | standard | full, default: full; with withText)" },
-      textMaxCharacters: { type: "number", description: "Cap page text at N characters, 1-10000 (with withText)" },
+      textMaxCharacters: { type: "number", description: "Cap page text at N characters, 1-1000000 (with withText)" },
       withHighlights: { type: "boolean", description: "Return query-relevant highlights (default: false)" },
-      highlightsQuery: { type: "string", description: "Focus highlights on this text (with withHighlights)" },
+      highlightsQuery: { type: "string", description: "Focus highlights on this text" },
+      highlightsMaxCharacters: { type: "number", description: "Cap highlight text per URL, 1-1000000. Not compatible with highlightsDynamic." },
+      highlightsDynamic: {
+        type: "boolean",
+        description: "Dynamic Highlights across the fetched pages (default: false). Sends the dynamic-highlights beta header.",
+      },
+      highlightsVerbosity: {
+        type: "string",
+        enum: ["low", "medium", "high"],
+        description: "Highlight length preset (low|medium|high). Sends the dynamic-highlights beta header.",
+      },
       withSummary: { type: "boolean", description: "Return a page summary (default: false)" },
       summaryQuery: { type: "string", description: "Focus the summary on this text (with withSummary)" },
       links: { type: "number", description: "Outbound links per page, 0-1000 (default: 0)" },
       imageLinks: { type: "number", description: "Image URLs per page, 0-1000 (default: 0)" },
       subpages: { type: "number", description: "Subpages to crawl per result, 0-100 (default: 0)" },
       subpageTarget: { type: "string", description: "Term to locate specific subpages (e.g. 'sources')" },
-      maxAgeHours: { type: "number", description: "Max age of cached content in hours; 0 forces a fresh fetch, -1 uses cache" },
+      maxAgeHours: { type: "number", description: "Max age of cached content in hours, -1..720; 0 forces a fresh fetch, -1 uses cache" },
+      snapshotAsOf: { type: "string", description: "Stored page as of this ISO date (YYYY-MM-DD) or date-time. Never live-fetches." },
+      userIdentifier: { type: "string", description: "Opaque end-user id, 1-64 [A-Za-z0-9_-]. Does not change the page." },
     },
   },
 };
@@ -1298,8 +1529,23 @@ const exaAnswerTool: Tool = {
         description: "Extra guidance: source preferences, style, novelty constraints.",
       },
       userLocation: {
+        description: "2-letter ISO country code, or {country?, latitude, longitude}.",
+        anyOf: [
+          { type: "string" },
+          {
+            type: "object",
+            properties: {
+              country: { type: "string" },
+              latitude: { type: "number" },
+              longitude: { type: "number" },
+            },
+            additionalProperties: false,
+          },
+        ],
+      },
+      userIdentifier: {
         type: "string",
-        description: "Two-letter ISO country code for location-aware answers.",
+        description: "Opaque end-user id, 1-64 [A-Za-z0-9_-]. Does not change the answer.",
       },
     },
     required: ["query"],
@@ -1323,9 +1569,9 @@ const exaAgentTool: Tool = {
       effort: {
         type: "string",
         description:
-          "Reasoning effort: minimal | low | medium | high | xhigh | max " +
-          "(highest-effort beta, completeness over latency/cost) | auto (let " +
-          "Exa choose). (default: auto)",
+          "Reasoning effort: minimal | low | medium | high | xhigh | ultra " +
+          "(highest OpenAPI tier) | auto (default: auto). max remains for the " +
+          "graceful-stop beta.",
       },
       systemPrompt: {
         type: "string",
@@ -1337,8 +1583,17 @@ const exaAgentTool: Tool = {
       },
       maxCostDollars: {
         type: "number",
+        minimum: 1,
+        maximum: 100,
         description:
-          "Per-run spending cap in USD, 1-100. (default: $5 cap on auto effort)",
+          "Per-run spending cap in USD, 1-100. Applies only to effort auto and ultra. (default: $5 on auto, $20 on ultra)",
+      },
+      maxDurationSeconds: {
+        type: "integer",
+        minimum: 300,
+        maximum: 10800,
+        description:
+          "Soft wall-clock cap in seconds, 300-10800 (5 minutes to 3 hours). Applies only to effort ultra. The run stops new work and returns what it has, stopReason time_limit_reached.",
       },
       timeout: {
         type: "number",
@@ -1374,6 +1629,10 @@ const exaAgentTool: Tool = {
         type: "object",
         additionalProperties: { type: "string" },
         description: "Arbitrary string key-value pairs to store with the run (your own tracking).",
+      },
+      userIdentifier: {
+        type: "string",
+        description: "Opaque end-user id, 1-64 [A-Za-z0-9_-]. Does not change the run.",
       },
     },
     required: ["query"],
@@ -1420,8 +1679,73 @@ const exaFindSimilarTool: Tool = {
         type: "string",
         description: "Only similar pages published before this ISO 8601 date.",
       },
+      withText: { type: "boolean", description: "Return page text (default: false)" },
+      textMaxCharacters: { type: "integer", minimum: 1, maximum: 1000000, description: "Cap on returned text, 1..1000000" },
+      textVerbosity: { type: "string", enum: ["compact", "standard", "full"], description: "Text rendering (compact | standard | full; with withText)" },
+      withHighlights: { type: "boolean", description: "Return highlights (default: false)" },
+      highlightsQuery: { type: "string", description: "Guide which highlights are picked" },
+      highlightsMaxCharacters: { type: "integer", minimum: 1, maximum: 1000000, description: "Cap on highlight text, 1..1000000" },
+      highlightsDynamic: { type: "boolean", description: "Dynamic Highlights across the similar pages (default: false)" },
+      highlightsVerbosity: { type: "string", enum: ["low", "medium", "high"], description: "Highlight length preset (low|medium|high)" },
+      snapshotAsOf: { type: "string", description: "Stored page as of this ISO date or date-time" },
+      maxAgeHours: { type: "number", description: "Max cached-content age in hours, -1..720" },
     },
     required: ["url"],
+  },
+};
+
+const searchSchemaProps = (): NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> =>
+  (exaSearchTool.inputSchema as { properties: NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> }).properties;
+const LITE_SCHEMA_KEYS = [
+  "query", "numResults", "category", "objective", "userIdentifier", "userLocation",
+  "moderation", "compliance", "includeDomains", "excludeDomains",
+  "startPublishedDate", "endPublishedDate",
+  "withHighlights", "highlightsQuery", "highlightsMaxCharacters", "highlightsDynamic",
+  "highlightsVerbosity", "withText", "textMaxCharacters", "textVerbosity", "snapshotAsOf",
+];
+
+const exaSearchLiteTool: Tool = {
+  name: "exa_search_lite",
+  description:
+    "Cached search via /search with type lite ($4/1k). Only lite-compatible " +
+    "parameters are accepted. Freshness, summary, synthesis, and extra queries " +
+    "are rejected; use exa_search for those.",
+  inputSchema: {
+    type: "object",
+    properties: Object.fromEntries(LITE_SCHEMA_KEYS.map((k) => [k, searchSchemaProps()[k]])) as NonNullable<Tool["inputSchema"]>["properties"],
+    required: ["query"],
+  },
+};
+
+const exaSearchNearTool: Tool = {
+  name: "exa_search_near",
+  description:
+    "Location-aware /search. userLocation is required: a 2-letter ISO country " +
+    "code, or {country?, latitude, longitude}. Same levers as exa_search.",
+  inputSchema: {
+    type: "object",
+    properties: { ...searchSchemaProps() } as NonNullable<Tool["inputSchema"]>["properties"],
+    required: ["query", "userLocation"],
+  },
+};
+
+const fetchSchemaProps = (): NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> =>
+  (exaFetchTool.inputSchema as { properties: NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> }).properties;
+const SNAPSHOT_SCHEMA_KEYS = [
+  "urls", "ids", "snapshotAsOf", "withText", "textVerbosity", "textMaxCharacters",
+  "withHighlights", "highlightsQuery", "highlightsMaxCharacters", "highlightsDynamic",
+  "highlightsVerbosity", "userIdentifier",
+];
+
+const exaFetchSnapshotTool: Tool = {
+  name: "exa_fetch_snapshot",
+  description:
+    "Fetches the stored page via /contents as of snapshotAsOf (ISO date or " +
+    "date-time). Never live-fetches. Provide urls or ids.",
+  inputSchema: {
+    type: "object",
+    properties: Object.fromEntries(SNAPSHOT_SCHEMA_KEYS.map((k) => [k, fetchSchemaProps()[k]])) as NonNullable<Tool["inputSchema"]>["properties"],
+    required: ["snapshotAsOf"],
   },
 };
 
@@ -1889,7 +2213,11 @@ const exaMonitorCreateTool: Tool = {
       outputSchema: { type: "object", description: "Optional structured-output schema" },
       events: { type: "array", items: { type: "string" }, description: "Subset of monitor events to deliver (default: all)" },
       metadata: { type: "object", additionalProperties: { type: "string" }, description: "String KV echoed back on deliveries" },
-      search: { type: "object", description: "Extra /search fields (contents, filters) merged into the monitored search" },
+      search: { type: "object", description: "Extra search fields merged into the monitored search. contents.highlights.dynamic or verbosity sends the dynamic-highlights beta header." },
+      filterEmptyResults: {
+        type: "boolean",
+        description: "Drop results with no content. Sent inside contents (default: false).",
+      },
     },
     required: ["query", "webhookUrl"],
   },
@@ -2577,10 +2905,20 @@ plan-gated — a 403 (category 'plan') means the key lacks the add-on, not a bug
 Best practices:
 - Recency: startPublishedDate / endPublishedDate (ISO 8601), not dates in the query
 - Domain scoping: includeDomains / excludeDomains, not site: / -site: operators
-- category=company|people returns entity data but rejects date filters and
-  excludeDomains (400)
+- category=company|people rejects published-date filters (400). people also
+  rejects excludeDomains. company may use excludeDomains.
+- searchType: lite for cheap cached search, auto for everyday, deep for synthesis.
+  instant/fast/deep-reasoning are legacy. Pass notices to the user; warnings are
+  request diagnostics. exa_search_lite exposes only lite parameters;
+  exa_fetch_snapshot pins snapshotAsOf; exa_search_near requires userLocation
+  (country code or lat/long).
+- exa_agent budget: maxCostDollars (1-100) on auto and ultra; maxDurationSeconds
+  (300-10800) on ultra only. Every tool accepts requestTimeout (seconds). A
+  cancelled MCP request aborts the in-flight fetch.
+- highlightsDynamic shares one context budget across results (beta header is
+  sent automatically). snapshotAsOf pins a stored page.
 - Request only what you use — withText / withHighlights / withSummary each add
-  cost; searchType auto for everyday, deep/deep-reasoning for hard questions
+  cost
 - Clean up what you create: websets, batches, monitors, imports, webhooks all
   have a _delete tool; probes use it so no residue is left behind
 
@@ -2637,6 +2975,177 @@ function requiredStr(args: any, key: string, tool: string): string {
 
 // Validate an enum-like value before it goes on the wire, so the model gets a
 // precise, actionable error instead of a raw API 400.
+function pickSearchType(args: any, tool: string): string | undefined {
+  const v = pick(args, "searchType", "string");
+  if (v === undefined) return undefined;
+  const st = v.trim().toLowerCase();
+  if (!st) {
+    throw new ExaApiError(`Tool ${tool}: 'searchType' must be a non-empty string`, "bad_request");
+  }
+  const replacement = LEGACY_SEARCH_TYPES[st];
+  if (replacement) {
+    console.error(
+      `[Exa API] searchType '${st}' is legacy. Use '${replacement}' for new requests. The legacy type is still sent.`,
+    );
+  }
+  return st;
+}
+
+function pickUserLocation(args: any, tool: string): string | Record<string, unknown> | undefined {
+  const v = args?.userLocation;
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v === "string") {
+    const code = v.trim();
+    if (!/^[A-Za-z]{2}$/.test(code)) {
+      throw new ExaApiError(
+        `Tool ${tool}: userLocation as a string must be a 2-letter ISO country code`, "bad_request");
+    }
+    return code;
+  }
+  if (typeof v !== "object" || Array.isArray(v)) {
+    throw new ExaApiError(
+      `Tool ${tool}: userLocation must be a country code or {country?, latitude, longitude}`, "bad_request");
+  }
+  const extra = Object.keys(v).filter((k) => !["country", "latitude", "longitude"].includes(k));
+  if (extra.length) {
+    throw new ExaApiError(`Tool ${tool}: userLocation has unknown keys: ${extra.join(", ")}`, "bad_request");
+  }
+  const country = v.country;
+  const lat = v.latitude;
+  const lon = v.longitude;
+  if (country !== undefined && (typeof country !== "string" || !/^[A-Za-z]{2}$/.test(country.trim()))) {
+    throw new ExaApiError(`Tool ${tool}: userLocation.country must be a 2-letter ISO country code`, "bad_request");
+  }
+  const hasLat = lat !== undefined && lat !== null;
+  const hasLon = lon !== undefined && lon !== null;
+  if (hasLat !== hasLon) {
+    throw new ExaApiError(`Tool ${tool}: userLocation latitude and longitude must be sent together`, "bad_request");
+  }
+  if (!hasLat) {
+    if (!country) {
+      throw new ExaApiError(`Tool ${tool}: userLocation needs a country and/or a latitude+longitude pair`, "bad_request");
+    }
+    return { country: String(country).trim() };
+  }
+  const latitude = Number(lat);
+  const longitude = Number(lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    throw new ExaApiError(
+      `Tool ${tool}: userLocation latitude must be -90..90 and longitude -180..180`, "bad_request");
+  }
+  const out: Record<string, unknown> = { latitude, longitude };
+  if (country) out.country = String(country).trim();
+  return out;
+}
+
+function pickUserIdentifier(args: any, tool: string): string | undefined {
+  const v = args?.userIdentifier;
+  if (v === undefined || v === null || v === "") return undefined;
+  const s = String(v);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(s)) {
+    throw new ExaApiError(
+      `Tool ${tool}: userIdentifier must be 1-64 letters, digits, underscores, or hyphens, with no personal information`,
+      "bad_request");
+  }
+  return s;
+}
+
+function pickObjective(args: any, tool: string): string | undefined {
+  const v = pick(args, "objective", "string");
+  if (v === undefined) return undefined;
+  if (v.length > 4096) {
+    throw new ExaApiError(`Tool ${tool}: objective must be at most 4096 characters`, "bad_request");
+  }
+  return v;
+}
+
+function pickSnapshotAsOf(args: any, tool: string): string | undefined {
+  const v = pick(args, "snapshotAsOf", "string");
+  if (v === undefined) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(v)) {
+    throw new ExaApiError(
+      `Tool ${tool}: snapshotAsOf must be an ISO date (YYYY-MM-DD) or date-time`, "bad_request");
+  }
+  return v;
+}
+
+function buildHighlights(args: {
+  withHighlights?: boolean; highlightsQuery?: string; highlightsMaxCharacters?: number;
+  highlightsDynamic?: boolean; highlightsVerbosity?: string;
+}): true | Record<string, unknown> | undefined {
+  const want = Boolean(
+    args.withHighlights || args.highlightsQuery || args.highlightsMaxCharacters
+    || args.highlightsDynamic || args.highlightsVerbosity
+  );
+  if (!want) return undefined;
+  if (args.highlightsDynamic && args.highlightsMaxCharacters) {
+    throw new ExaApiError("highlightsDynamic is not compatible with highlightsMaxCharacters", "bad_request");
+  }
+  if (args.highlightsVerbosity && args.highlightsMaxCharacters) {
+    throw new ExaApiError("highlightsVerbosity is not compatible with highlightsMaxCharacters", "bad_request");
+  }
+  const advanced = Boolean(
+    args.highlightsQuery || args.highlightsMaxCharacters || args.highlightsDynamic || args.highlightsVerbosity
+  );
+  if (!advanced) return true;
+  const h: Record<string, unknown> = {};
+  if (args.highlightsQuery) h.query = args.highlightsQuery;
+  if (args.highlightsMaxCharacters) h.maxCharacters = args.highlightsMaxCharacters;
+  if (args.highlightsVerbosity) h.verbosity = args.highlightsVerbosity;
+  if (args.highlightsDynamic) h.dynamic = true;
+  return h;
+}
+
+function buildText(args: { withText?: boolean; textMaxCharacters?: number; textVerbosity?: string }): true | Record<string, unknown> | undefined {
+  if (!(args.withText || args.textMaxCharacters || args.textVerbosity)) return undefined;
+  if (args.withText && !args.textMaxCharacters && !args.textVerbosity) return true;
+  const t: Record<string, unknown> = {};
+  if (args.textMaxCharacters) t.maxCharacters = args.textMaxCharacters;
+  if (args.textVerbosity) t.verbosity = args.textVerbosity;
+  return t;
+}
+
+function dynamicHighlightsHeaders(block: any): Record<string, string> | undefined {
+  const highlights = block?.highlights;
+  if (highlights && typeof highlights === "object" && (highlights.dynamic || highlights.verbosity)) {
+    return { "Exa-Beta": DYNAMIC_HIGHLIGHTS_BETA };
+  }
+  return undefined;
+}
+
+function assertLiteSearch(body: any): void {
+  if (body?.type !== "lite") return;
+  const bad = Object.keys(body).filter((k) => !LITE_TOP_LEVEL.has(k));
+  const contents = body.contents ?? {};
+  if (contents && typeof contents === "object") {
+    for (const k of Object.keys(contents)) {
+      if (!LITE_CONTENTS.has(k)) bad.push(`contents.${k}`);
+    }
+  }
+  if (bad.length) {
+    throw new ExaApiError(
+      `search type 'lite' rejects ${bad.join(", ")}. It accepts query, objective, userIdentifier, ` +
+      `category, numResults, contents.highlights, contents.text, contents.snapshotAsOf, userLocation, ` +
+      `includeDomains, excludeDomains, published dates, moderation, and compliance. Use searchType 'auto' ` +
+      `for summary, freshness, or synthesis.`,
+      "bad_request");
+  }
+}
+
+function renderNotices(data: any): string {
+  const notices = Array.isArray(data?.notices) ? data.notices : [];
+  if (!notices.length) return "";
+  const lines = notices.map((n: any) => `- ${n?.code ?? "NOTICE"}: ${n?.message ?? ""}`);
+  return `\n\n--- notices ---\n${lines.join("\n")}`;
+}
+
+function logWarnings(data: any): void {
+  const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+  for (const w of warnings) {
+    console.error(`[Exa API] warning ${w?.code ?? ""} at ${w?.path ?? ""}: ${w?.message ?? ""}`);
+  }
+}
+
 function pickEnum(args: any, key: string, allowed: readonly string[], tool: string): string | undefined {
   const v = pick(args, key, "string");
   if (v === undefined) return undefined;
@@ -2645,6 +3154,44 @@ function pickEnum(args: any, key: string, allowed: readonly string[], tool: stri
       `Tool ${tool}: '${key}' must be one of: ${allowed.join(", ")} (got '${v}')`, "bad_request");
   }
   return v;
+}
+
+function pickRequestTimeoutMs(args: any, tool: string): number | undefined {
+  const v = args?.requestTimeout;
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0.05 || v > 600) {
+    throw new ExaApiError(
+      `Tool ${tool}: 'requestTimeout' must be seconds between 0.05 and 600 (got ${v})`, "bad_request");
+  }
+  return Math.round(v * 1000);
+}
+
+function rejectBanned(args: any, keys: readonly string[], tool: string, why: string): void {
+  const hit = keys.filter((k) => args?.[k] !== undefined && args?.[k] !== null && args?.[k] !== "");
+  if (hit.length) {
+    throw new ExaApiError(`${tool} rejects ${hit.join(", ")}. ${why}`, "bad_request");
+  }
+}
+
+const REQUEST_TIMEOUT_PROPERTY = {
+  type: "number" as const,
+  minimum: 0.05,
+  maximum: 600,
+  description:
+    "Per-call HTTP timeout in seconds (default: the endpoint's own). A cancelled MCP request aborts the in-flight fetch.",
+};
+
+function expose(tool: Tool): Tool {
+  const schema = tool.inputSchema;
+  if (!schema || schema.type !== "object") return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      type: "object",
+      properties: { ...(schema.properties ?? {}), requestTimeout: REQUEST_TIMEOUT_PROPERTY },
+    },
+  };
 }
 
 function pickIntInRange(args: any, key: string, min: number, max: number, tool: string): number | undefined {
@@ -2664,11 +3211,16 @@ function checkEntityCategoryCompatibility(
   excludeDomains: string[] | undefined,
   tool: string,
 ): void {
-  if (category && ENTITY_CATEGORIES.has(category) && (startPublishedDate || endPublishedDate || excludeDomains)) {
+  if (category && DATE_REJECTING_CATEGORIES.has(category) && (startPublishedDate || endPublishedDate)) {
     throw new ExaApiError(
-      `Tool ${tool}: category '${category}' does not support startPublishedDate, ` +
-      `endPublishedDate, or excludeDomains — the Exa API returns 400 for these. ` +
-      `Drop the date/domain filter or use a different category.`,
+      `Tool ${tool}: category '${category}' does not support startPublishedDate or ` +
+      `endPublishedDate — the Exa API returns 400. Drop the dates or use another category.`,
+      "bad_request");
+  }
+  if (category === "people" && excludeDomains && excludeDomains.length) {
+    throw new ExaApiError(
+      `Tool ${tool}: category 'people' does not support excludeDomains — the Exa API returns 400. ` +
+      `Use includeDomains instead.`,
       "bad_request");
   }
 }
@@ -2811,6 +3363,80 @@ function toolResult(text: string, bag: Record<string, unknown>, isError = false)
   };
 }
 
+function collectSearchArgs(args: any, tool: string, forcedType?: string): ExaSearchArgs {
+  const queries = pick(args, "additionalQueries", "array") as string[] | undefined;
+  if (queries && (queries.length < 1 || queries.length > 10)) {
+    throw new ExaApiError(`${tool}: additionalQueries must contain 1 to 10 strings`, "bad_request");
+  }
+  const compliance = pick(args, "compliance", "string");
+  if (compliance && compliance !== "hipaa") {
+    throw new ExaApiError(`${tool}: compliance must be 'hipaa'`, "bad_request");
+  }
+  const a: ExaSearchArgs = {
+    query: requiredStr(args, "query", tool),
+    numResults: pickIntInRange(args, "numResults", 1, 100, tool),
+    category: pick(args, "category", "string"),
+    searchType: forcedType ?? pickSearchType(args, tool),
+    startPublishedDate: pick(args, "startPublishedDate", "string"),
+    endPublishedDate: pick(args, "endPublishedDate", "string"),
+    includeDomains: pick(args, "includeDomains", "array"),
+    excludeDomains: pick(args, "excludeDomains", "array"),
+    userLocation: pickUserLocation(args, tool),
+    objective: pickObjective(args, tool),
+    userIdentifier: pickUserIdentifier(args, tool),
+    systemPrompt: pick(args, "systemPrompt", "string"),
+    additionalQueries: queries,
+    moderation: pick(args, "moderation", "boolean"),
+    compliance,
+    withHighlights: pick(args, "withHighlights", "boolean"),
+    highlightsQuery: pick(args, "highlightsQuery", "string"),
+    highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, tool),
+    highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
+    highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, tool),
+    withText: pick(args, "withText", "boolean"),
+    textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, tool),
+    textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, tool),
+    withSummary: pick(args, "withSummary", "boolean"),
+    summaryQuery: pick(args, "summaryQuery", "string"),
+    links: pickIntInRange(args, "links", 0, 1000, tool),
+    imageLinks: pickIntInRange(args, "imageLinks", 0, 1000, tool),
+    maxAgeHours: pickIntInRange(args, "maxAgeHours", -1, 720, tool),
+    snapshotAsOf: pickSnapshotAsOf(args, tool),
+    outputSchema: pick(args, "outputSchema", "object"),
+  };
+  checkEntityCategoryCompatibility(a.category, a.startPublishedDate, a.endPublishedDate, a.excludeDomains, tool);
+  return a;
+}
+
+function searchToolResult(data: any, meta: ApiMetricsMeta) {
+  logWarnings(data);
+  const results: any[] = data?.results ?? [];
+  const lines = results.map((r, i) => {
+    const bits = [`${i + 1}. ${r.title || "(untitled)"}`, `   ${r.url || ""}`];
+    if (r.publishedDate) bits.push(`   published: ${r.publishedDate}`);
+    const s = summaryText(r.summary);
+    if (s) bits.push(`   ${s.slice(0, 240)}`);
+    const h = firstHighlight(r);
+    if (h && s !== h) bits.push(`   ${h.slice(0, 200)}`);
+    return bits.join("\n");
+  });
+  let answer = "";
+  if (data?.output?.content) {
+    answer = `\n\n--- synthesized answer ---\n${typeof data.output.content === "string"
+      ? data.output.content : JSON.stringify(data.output.content)}`;
+  }
+  return toolResult(
+    `Found ${results.length} result(s):\n${lines.join("\n")}${answer}${renderNotices(data)}`,
+    {
+      ...meta,
+      raw: data,
+      costDollars: data?.costDollars,
+      warnings: data?.warnings ?? [],
+      notices: data?.notices ?? [],
+    },
+  );
+}
+
 function buildServer(apiKey: string): Server {
   const client = new ExaClient(apiKey);
 
@@ -2838,7 +3464,8 @@ function buildServer(apiKey: string): Server {
   };
 
   // Read resources
-  server.setRequestHandler("resources/read", async (request) => {
+  server.setRequestHandler("resources/read", async (request, ctx) => {
+    return callControl.run({ signal: ctx.mcpReq.signal }, async () => {
     const uri = request.params.uri;
     if (uri === "exa-team:") {
       const team = await client.team();
@@ -2864,6 +3491,7 @@ function buildServer(apiKey: string): Server {
       };
     }
     throw new Error(`Unsupported resource URI: ${uri}`);
+    });
   });
 
   server.setRequestHandler("resources/list", async () => ({
@@ -2878,7 +3506,8 @@ function buildServer(apiKey: string): Server {
 
   server.setRequestHandler("tools/list", async () => ({
     tools: [
-      exaSearchTool, exaFetchTool, exaAnswerTool, exaAgentTool, exaFindSimilarTool,
+      exaSearchTool, exaSearchLiteTool, exaSearchNearTool, exaFetchTool, exaFetchSnapshotTool,
+      exaAnswerTool, exaAgentTool, exaFindSimilarTool,
       exaAgentGetTool, exaAgentListTool, exaAgentCancelTool, exaAgentStopTool, exaAgentEventsTool,
       exaAgentDeleteTool,
       exaBatchCreateTool, exaBatchGetTool, exaBatchListTool, exaBatchCancelTool, exaBatchDeleteTool,
@@ -2899,7 +3528,7 @@ function buildServer(apiKey: string): Server {
       exaWebhookCreateTool, exaWebhookListTool, exaWebhookGetTool, exaWebhookUpdateTool,
       exaWebhookDeleteTool, exaWebhookAttemptsTool,
       exaEventListTool, exaEventGetTool,
-    ],
+    ].map(expose),
   }));
 
   server.setRequestHandler("prompts/list", async () => ({
@@ -2919,54 +3548,32 @@ function buildServer(apiKey: string): Server {
     throw new Error(`Prompt not found: ${request.params.name}`);
   });
 
-  server.setRequestHandler("tools/call", async (request) => {
+  server.setRequestHandler("tools/call", async (request, ctx) => {
     const { name, arguments: args = {} } = request.params;
     const meta = metricsMeta();
     try {
+      if (ctx.mcpReq.signal.aborted) {
+        throw new ExaApiError("Exa request cancelled.", "cancelled", 499);
+      }
+      const timeoutMs = pickRequestTimeoutMs(args, name);
+      return await callControl.run({ signal: ctx.mcpReq.signal, timeoutMs }, async () => {
       switch (name) {
         case "exa_search": {
-          const a: ExaSearchArgs = {
-            query: requiredStr(args, "query", "exa_search"),
-            numResults: pickIntInRange(args, "numResults", 1, 100, "exa_search"),
-            category: pick(args, "category", "string"),
-            searchType: pickEnum(args, "searchType", SEARCH_TYPES, "exa_search"),
-            startPublishedDate: pick(args, "startPublishedDate", "string"),
-            endPublishedDate: pick(args, "endPublishedDate", "string"),
-            includeDomains: pick(args, "includeDomains", "array"),
-            excludeDomains: pick(args, "excludeDomains", "array"),
-            userLocation: pick(args, "userLocation", "string"),
-            withHighlights: pick(args, "withHighlights", "boolean"),
-            highlightsQuery: pick(args, "highlightsQuery", "string"),
-            withText: pick(args, "withText", "boolean"),
-            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 10000, "exa_search"),
-            textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, "exa_search"),
-            withSummary: pick(args, "withSummary", "boolean"),
-            summaryQuery: pick(args, "summaryQuery", "string"),
-            links: pickIntInRange(args, "links", 0, 1000, "exa_search"),
-            imageLinks: pickIntInRange(args, "imageLinks", 0, 1000, "exa_search"),
-            outputSchema: pick(args, "outputSchema", "object"),
-          };
-          checkEntityCategoryCompatibility(a.category, a.startPublishedDate, a.endPublishedDate, a.excludeDomains, "exa_search");
-          const data = await client.search(a);
-          const results: any[] = data?.results ?? [];
-          const lines = results.map((r, i) => {
-            const bits = [`${i + 1}. ${r.title || "(untitled)"}`, `   ${r.url || ""}`];
-            if (r.publishedDate) bits.push(`   published: ${r.publishedDate}`);
-            const s = summaryText(r.summary);
-            if (s) bits.push(`   ${s.slice(0, 240)}`);
-            const h = firstHighlight(r);
-            if (h && s !== h) bits.push(`   ${h.slice(0, 200)}`);
-            return bits.join("\n");
-          });
-          let answer = "";
-          if (data?.output?.content) {
-            answer = `\n\n--- synthesized answer ---\n${typeof data.output.content === "string"
-              ? data.output.content : JSON.stringify(data.output.content)}`;
+          return searchToolResult(await client.search(collectSearchArgs(args, "exa_search")), meta);
+        }
+        case "exa_search_lite": {
+          rejectBanned(args, LITE_BANNED, "exa_search_lite",
+            "Use exa_search for freshness, summaries, synthesis, or another search type.");
+          return searchToolResult(await client.search(collectSearchArgs(args, "exa_search_lite", "lite")), meta);
+        }
+        case "exa_search_near": {
+          const near = collectSearchArgs(args, "exa_search_near");
+          if (!near.userLocation) {
+            throw new ExaApiError(
+              "exa_search_near requires userLocation (a 2-letter country code or {country?, latitude, longitude}).",
+              "bad_request");
           }
-          return toolResult(
-            `Found ${results.length} result(s):\n${lines.join("\n")}${answer}`,
-            { ...meta, raw: data, costDollars: data?.costDollars },
-          );
+          return searchToolResult(await client.search(near), meta);
         }
         case "exa_fetch": {
           const a: ExaFetchArgs = {
@@ -2974,16 +3581,21 @@ function buildServer(apiKey: string): Server {
             ids: pick(args, "ids", "array"),
             withText: pick(args, "withText", "boolean"),
             textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, "exa_fetch"),
-            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 10000, "exa_fetch"),
+            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, "exa_fetch"),
             withHighlights: pick(args, "withHighlights", "boolean"),
             highlightsQuery: pick(args, "highlightsQuery", "string"),
+            highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, "exa_fetch"),
+            highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
+            highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, "exa_fetch"),
             withSummary: pick(args, "withSummary", "boolean"),
             summaryQuery: pick(args, "summaryQuery", "string"),
             links: pickIntInRange(args, "links", 0, 1000, "exa_fetch"),
             imageLinks: pickIntInRange(args, "imageLinks", 0, 1000, "exa_fetch"),
             subpages: pickIntInRange(args, "subpages", 0, 100, "exa_fetch"),
             subpageTarget: pick(args, "subpageTarget", "string"),
-            maxAgeHours: pick(args, "maxAgeHours", "number"),
+            maxAgeHours: pickIntInRange(args, "maxAgeHours", -1, 720, "exa_fetch"),
+            snapshotAsOf: pickSnapshotAsOf(args, "exa_fetch"),
+            userIdentifier: pickUserIdentifier(args, "exa_fetch"),
           };
           if (!a.urls && !a.ids) {
             throw new ExaApiError("exa_fetch needs either urls or ids", "bad_request");
@@ -2994,13 +3606,45 @@ function buildServer(apiKey: string): Server {
             { ...meta, raw: data, costDollars: data?.costDollars },
           );
         }
+        case "exa_fetch_snapshot": {
+          rejectBanned(args, ["maxAgeHours", "subpages", "subpageTarget"], "exa_fetch_snapshot",
+            "A snapshot never live-fetches.");
+          const snapshotAsOf = pickSnapshotAsOf(args, "exa_fetch_snapshot");
+          if (!snapshotAsOf) {
+            throw new ExaApiError(
+              "exa_fetch_snapshot requires snapshotAsOf (YYYY-MM-DD or an ISO date-time).", "bad_request");
+          }
+          const snap: ExaFetchArgs = {
+            urls: pick(args, "urls", "array"),
+            ids: pick(args, "ids", "array"),
+            withText: pick(args, "withText", "boolean"),
+            textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, "exa_fetch_snapshot"),
+            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, "exa_fetch_snapshot"),
+            withHighlights: pick(args, "withHighlights", "boolean"),
+            highlightsQuery: pick(args, "highlightsQuery", "string"),
+            highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, "exa_fetch_snapshot"),
+            highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
+            highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, "exa_fetch_snapshot"),
+            snapshotAsOf,
+            userIdentifier: pickUserIdentifier(args, "exa_fetch_snapshot"),
+          };
+          if (!snap.urls && !snap.ids) {
+            throw new ExaApiError("exa_fetch_snapshot needs either urls or ids", "bad_request");
+          }
+          const snapData = await client.fetch(snap);
+          return toolResult(
+            renderContents(snapData),
+            { ...meta, raw: snapData, costDollars: snapData?.costDollars },
+          );
+        }
         case "exa_answer": {
           const a: ExaAnswerArgs = {
             query: requiredStr(args, "query", "exa_answer"),
             text: pick(args, "text", "boolean"),
             outputSchema: pick(args, "outputSchema", "object"),
             systemPrompt: pick(args, "systemPrompt", "string"),
-            userLocation: pick(args, "userLocation", "string"),
+            userLocation: pickUserLocation(args, "exa_answer"),
+            userIdentifier: pickUserIdentifier(args, "exa_answer"),
           };
           const data = await client.answer(a);
           const cits: any[] = data?.citations ?? [];
@@ -3011,18 +3655,30 @@ function buildServer(apiKey: string): Server {
           );
         }
         case "exa_agent": {
+          const effort = pickEnum(args, "effort", AGENT_EFFORTS, "exa_agent");
+          const maxCostDollars = pickIntInRange(args, "maxCostDollars", 1, 100, "exa_agent");
+          const maxDurationSeconds = pickIntInRange(args, "maxDurationSeconds", 300, 10800, "exa_agent");
+          const resolvedEffort = effort ?? "auto";
+          if (maxDurationSeconds !== undefined && resolvedEffort !== "ultra") {
+            throw new ExaApiError("exa_agent: maxDurationSeconds applies only to effort ultra.", "bad_request");
+          }
+          if (maxCostDollars !== undefined && resolvedEffort !== "auto" && resolvedEffort !== "ultra") {
+            throw new ExaApiError("exa_agent: maxCostDollars applies only to effort auto and ultra.", "bad_request");
+          }
           const a: ExaAgentArgs = {
             query: requiredStr(args, "query", "exa_agent"),
-            effort: pickEnum(args, "effort", AGENT_EFFORTS, "exa_agent"),
+            effort,
             systemPrompt: pick(args, "systemPrompt", "string"),
             outputSchema: pick(args, "outputSchema", "object"),
-            maxCostDollars: pickIntInRange(args, "maxCostDollars", 1, 100, "exa_agent"),
+            maxCostDollars,
+            maxDurationSeconds,
             timeout: pick(args, "timeout", "number"),
             previousRunId: pick(args, "previousRunId", "string"),
             metadata: pick(args, "metadata", "object"),
             data: pick(args, "data", "array"),
             exclusion: pick(args, "exclusion", "array"),
             dataSources: pick(args, "dataSources", "array"),
+            userIdentifier: pickUserIdentifier(args, "exa_agent"),
           };
           const run = await client.agent(a);
           const grounding: any[] = run?.output?.grounding ?? [];
@@ -3045,13 +3701,25 @@ function buildServer(apiKey: string): Server {
             excludeDomains: pick(args, "excludeDomains", "array"),
             startPublishedDate: pick(args, "startPublishedDate", "string"),
             endPublishedDate: pick(args, "endPublishedDate", "string"),
+            withHighlights: pick(args, "withHighlights", "boolean"),
+            highlightsQuery: pick(args, "highlightsQuery", "string"),
+            highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, "exa_find_similar"),
+            highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
+            highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, "exa_find_similar"),
+            withText: pick(args, "withText", "boolean"),
+            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, "exa_find_similar"),
+            textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, "exa_find_similar"),
+            maxAgeHours: pickIntInRange(args, "maxAgeHours", -1, 720, "exa_find_similar"),
+            snapshotAsOf: pickSnapshotAsOf(args, "exa_find_similar"),
           };
+          checkEntityCategoryCompatibility(a.category, a.startPublishedDate, a.endPublishedDate, a.excludeDomains, "exa_find_similar");
           const data = await client.findSimilar(a);
+          logWarnings(data);
           const results: any[] = data?.results ?? [];
           const lines = results.map((r, i) => `${i + 1}. ${r.title ?? "(untitled)"}\n   ${r.url ?? ""}`).join("\n");
           return toolResult(
-            `${results.length} similar page(s):\n${lines}`,
-            { ...meta, raw: data },
+            `${results.length} similar page(s):\n${lines}${renderNotices(data)}`,
+            { ...meta, raw: data, warnings: data?.warnings ?? [], notices: data?.notices ?? [] },
           );
         }
         case "exa_agent_get": {
@@ -3348,6 +4016,7 @@ function buildServer(apiKey: string): Server {
             events: pick(args, "events", "array"),
             metadata: pick(args, "metadata", "object"),
             search: pick(args, "search", "object"),
+            filterEmptyResults: pick(args, "filterEmptyResults", "boolean"),
           });
           return toolResult(
             `Monitor ${m?.id ?? "(created)"} (status: ${m?.status ?? "?"})${m?.webhookSecret ? " · webhook secret returned" : ""}.`,
@@ -3788,6 +4457,7 @@ function buildServer(apiKey: string): Server {
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
+      });
     } catch (error) {
       const message = error instanceof ExaApiError
         ? error.message

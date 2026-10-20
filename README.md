@@ -63,7 +63,8 @@ client with per-endpoint error classification, JSON-Schema tool contracts,
 addressable resources + resource templates, a server prompt, and API metrics
 attached to every tool response. Both run over stdio.
 
-- [Exa MCP server](mcp/exa/README.md) — `exa_search`, `exa_fetch`, `exa_answer`,
+- [Exa MCP server](mcp/exa/README.md) — `exa_search`, `exa_search_lite`,
+  `exa_search_near`, `exa_fetch`, `exa_fetch_snapshot`, `exa_answer`,
   `exa_agent`, `exa_find_similar`; resources `exa-team:` and
   `exa-content:///{url}`. Requires `EXA_API_KEY`.
 - [Brave Search MCP server](mcp/brave/README.md) — `brave_web_search`,
@@ -78,8 +79,12 @@ and Claude Code config). No credentials are ever printed.
 Both servers follow the Linear MCP decision-making style: the tool set stays
 small, but the high-impact knobs that actually shape results are exposed with
 inline defaults and allowed values so a model picks them without guessing —
-e.g. Exa published-date ranges, search depth, vertical `category`, and agent
-effort; Brave `freshness` (incl. date ranges), per-result `extra` snippets,
+e.g. Exa `searchType` `lite` / `auto` / `deep`, published-date ranges,
+`objective`, country or lat/long `userLocation`, dynamic highlights,
+`snapshotAsOf`, agent `effort` including `ultra` with `maxCostDollars` /
+`maxDurationSeconds`, and per-tool `requestTimeout` (a cancelled MCP request
+aborts the in-flight fetch); Brave `freshness`
+(incl. date ranges), per-result `extra` snippets,
 image licensing/transparency filters, and place `radius`. Every tool errors
 with `isError: true` plus a machine-readable `category`, and enum/range args
 are validated client-side before the wire call.

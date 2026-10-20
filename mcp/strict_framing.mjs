@@ -182,6 +182,71 @@ function runCase(spec) {
   });
 }
 
+if (dir === "exa") {
+  for (const spec of cases) {
+    const prior = spec.check;
+    const params = { name: "exa_search", arguments: { query: "x", searchType: "lite", withSummary: true } };
+    spec.steps.push([300, (rpc) => rpc(5, "tools/call", spec.name === "2026-07-28" ? modernParams(params) : params)]);
+    const extras = [
+      [6, { name: "exa_search_lite", arguments: { query: "x", withSummary: true } }, "search_lite+summary"],
+      [7, { name: "exa_fetch_snapshot", arguments: { urls: ["https://example.com"] } }, "fetch_snapshot"],
+      [8, { name: "exa_search_near", arguments: { query: "x" } }, "search_near"],
+      [9, { name: "exa_agent", arguments: { query: "x", maxDurationSeconds: 300 } }, "agent duration"],
+      [10, { name: "exa_search", arguments: { query: "x", requestTimeout: 0 } }, "requestTimeout"],
+    ];
+    for (const [id, params, label] of extras) {
+      spec.steps.push([200, (rpc) => rpc(id, "tools/call", spec.name === "2026-07-28" ? modernParams(params) : params)]);
+      void label;
+    }
+    spec.check = (messages) => {
+      const base = prior(messages);
+      if (base) return base;
+      const listed = messages.find((m) => m.id === 2)?.result?.tools ?? [];
+      const byName = Object.fromEntries(listed.map((t) => [t.name, t]));
+      for (const n of ["exa_search_lite", "exa_fetch_snapshot", "exa_search_near"]) {
+        if (!byName[n]) return `missing tool ${n}`;
+      }
+      const liteProps = Object.keys(byName.exa_search_lite.inputSchema?.properties ?? {});
+      if (liteProps.includes("withSummary") || liteProps.includes("maxAgeHours")) {
+        return "exa_search_lite exposes a non-lite parameter";
+      }
+      if (!(byName.exa_fetch_snapshot.inputSchema?.required ?? []).includes("snapshotAsOf")) {
+        return "exa_fetch_snapshot snapshotAsOf not required";
+      }
+      if (!(byName.exa_search_near.inputSchema?.required ?? []).includes("userLocation")) {
+        return "exa_search_near userLocation not required";
+      }
+      if (!byName.exa_agent?.inputSchema?.properties?.maxDurationSeconds) {
+        return "exa_agent missing maxDurationSeconds";
+      }
+      if (!byName.exa_search?.inputSchema?.properties?.requestTimeout) {
+        return "exa_search missing requestTimeout";
+      }
+      const call = messages.find((m) => m.id === 5);
+      const result = call?.result;
+      if (!result?.isError) return "lite+summary did not return isError";
+      if (result.structuredContent?.category !== "bad_request") {
+        return `lite+summary category ${result.structuredContent?.category ?? "missing"}`;
+      }
+      const block = result.content?.[0];
+      if (JSON.stringify(result.structuredContent) !== JSON.stringify(block?._meta)) {
+        return "lite+summary structuredContent and content[0]._meta differ";
+      }
+      for (const [id, , label] of extras) {
+        const extra = messages.find((m) => m.id === id)?.result;
+        if (!extra?.isError || extra.structuredContent?.category !== "bad_request") {
+          return `${label} category ${extra?.structuredContent?.category ?? "missing"}`;
+        }
+        const extraBlock = extra.content?.[0];
+        if (JSON.stringify(extra.structuredContent) !== JSON.stringify(extraBlock?._meta)) {
+          return `${label} structuredContent and content[0]._meta differ`;
+        }
+      }
+      return null;
+    };
+  }
+}
+
 let failed = 0;
 for (const spec of cases) {
   const result = await runCase(spec);

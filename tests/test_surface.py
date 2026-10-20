@@ -22,6 +22,7 @@ _BASELINE = os.path.join(_ROOT, ".analysis", "phase1_signatures.json")
 _EXA_INTENDED_NEW = {
     "agent_stop", "batch_create", "batch_get", "batch_list",
     "batch_cancel", "batch_delete", "poll_batch",
+    "search_lite", "fetch_snapshot", "search_near",
 }
 
 # Intentional signature drifts (documented behaviour changes, not silent
@@ -29,6 +30,9 @@ _EXA_INTENDED_NEW = {
 # fan out in parallel instead of running serially.
 _EXA_INTENDED_DRIFT = {
     "deep_research",
+    # Exa 3.0 search parameters (lite, objective, user location, dynamic highlights).
+    "search", "run", "fetch", "find_similar", "answer", "stream_answer", "agent",
+    "monitor_create",
 }
 
 # Intentional feature-adds to the brave surface: Brave's newer retrieval
@@ -47,7 +51,7 @@ _BRAVE_INTENDED_DRIFT = set()
 # Pinned surface counts. exa grew its public surface with the agent-stop +
 # batches additions after the Phase-1 baseline; brave grew with the four
 # newer retrieval endpoints.
-_EXA_COUNT = 131
+_EXA_COUNT = 141
 _BRAVE_COUNT = 82
 
 
@@ -78,7 +82,8 @@ class SurfaceCounts(unittest.TestCase):
 
 class ErrorHierarchy(unittest.TestCase):
     EXA_ERRORS = ["ExaAuthError", "ExaRateLimitError", "ExaBadRequestError",
-                  "ExaPlanError", "ExaNotFoundError", "ExaServerError"]
+                  "ExaPlanError", "ExaNotFoundError", "ExaServerError",
+                  "ExaTimeoutError", "ExaCancelledError"]
 
     def test_exa_error_is_runtime_error(self):
         self.assertTrue(issubclass(exa.ExaError, RuntimeError))

@@ -14,36 +14,47 @@ or call private key helpers merely to check availability.
 
 ## Modes and filters
 
-| Mode | Category |
-|---|---|
-| `auto` | Unrestricted |
-| `code`, `github` | `github` |
-| `company`, `lead`, `lead-generation`, `websets` | `company` |
-| `financial` | `financial report` |
-| `people` | `people` |
-| `paper`, `research` | `publication` |
-| `personal-site`, `personal` | `personal site` |
-| `publication` | `publication` |
-| `news` | `news` |
+| Mode | Category | Search type |
+|---|---|---|
+| `auto` | Unrestricted | `auto` |
+| `lite` | Unrestricted | `lite` |
+| `code`, `github` | `github` | `auto` |
+| `company`, `lead`, `lead-generation`, `websets` | `company` | `auto` |
+| `financial` | `financial report` | `auto` |
+| `people` | `people` | `auto` |
+| `paper`, `research`, `publication` | `publication` | `auto` |
+| `personal-site`, `personal` | `personal site` | `auto` |
+| `news` | `news` | `auto` |
 
-Check `modes()` or the module's mappings for aliases. Company/people searches
-are locally rejected with publication-date or `exclude_domains` filters.
-Unknown categories can fall back to unfiltered search with a warning; do not
-interpret the output as filtered. The client validates `num_results` from 1–100.
+Check `modes()` for aliases. `people` rejects published dates and
+`exclude_domains`. `company` rejects published dates and may use
+`exclude_domains`. Unknown categories fall back to unfiltered search with a
+warning. `num_results` is 1–100.
 
-`search_type` accepts `auto`, `instant`, `fast`, `hybrid`, `neural`, `keyword`,
-`deep-lite`, `deep`, and `deep-reasoning`; legacy `magic` maps to `deep`.
-These are client-accepted values, not a promise of current server support.
-Use `auto` initially, fast variants for latency, and deep variants for a concrete
-research need. `semantic` is not a supported client search type.
+`search_type` is open. Recommended: `lite`, `auto` (default), `deep`. Also
+`deep-lite`. Legacy `instant` and `fast` still send and warn (use `lite`);
+`deep-reasoning` still sends and warns (use `deep`). `magic` warns and is sent
+as `deep`. Any other non-empty string is sent through. `semantic` is not an alias.
 
-- `include_domains` / `exclude_domains`: lists of hosts.
-- `start_published_date` / `end_published_date`: ISO date bounds.
-- `text_include` / `text_exclude`: lists forwarded as text filters.
-- `start_crawl_date` / `end_crawl_date` are forwarded, but their effect must be
-  checked; do not confuse crawl time with publication time.
-- `use_autoprompt=True` sends an autoprompt request; `False` omits the field,
-  so it does not explicitly disable server-side rewriting.
+`lite` is cached-only: $4 per 1k requests for up to 10 results, plus $1 per 1k
+results above 10 ([changelog](https://exa.ai/docs/changelog)). `auto` is $7 per
+1k ([Exa 3.0](https://exa.ai/blog/exa-3)). It accepts `query`, `objective`,
+`user_identifier`, `category`, `num_results`, highlights, text, `snapshot_as_of`,
+`user_location`, domain filters, published dates, `moderation`, and `compliance`
+([OpenAPI](https://exa.ai/docs/exa-spec.yaml)). Freshness, summary, synthesis,
+and extra queries raise `ExaBadRequestError` locally. `search_lite(query, ...)` forces `lite` and rejects any other `search_type`. `search_near(query, user_location, ...)` requires a country code or `{latitude, longitude}`. `fetch_snapshot(urls, snapshot_as_of=...)` reads the stored page and never live-fetches.
+
+- `objective`: ranking goal, max 4096 characters.
+- `user_location`: a 2-letter ISO country code, or `{country?, latitude, longitude}`. Latitude and longitude go together; coordinates do not set a country.
+- `user_identifier`: 1–64 `[A-Za-z0-9_-]`, no personal data. It does not change results. Also on `fetch`, `answer`, `stream_answer`, and `agent`.
+- `include_domains` / `exclude_domains`: host lists. `start_published_date` / `end_published_date`: ISO bounds.
+- `moderation=True` filters unsafe content. `compliance="hipaa"` requests cache-only retrieval.
+
+Deprecated kwargs still send and raise `DeprecationWarning`: `start_crawl_date` / `end_crawl_date` (ignored), `text_include` / `text_exclude` (wire fields `includeText` / `excludeText`), `livecrawl` (use `max_age_hours`), `context`, search `subpages` / `subpage_target` (still valid on `fetch`), `extras_rich_links`, and `extras_code_blocks`. `use_autoprompt=True` sends autoprompt; `False` omits the field.
+
+## Timeouts and cancellation
+
+`timeout` on a call is seconds (a number stays a number). `RequestTimeout(total, connect=, read=, write=, pool=)` or a dict with those keys sets httpx phases. A timeout raises `ExaTimeoutError` (`phase` is `connect`, `read`, `write`, `pool`, or `total`). `CancelToken` aborts one call: `token.cancel(reason)` closes that call's private client and raises `ExaCancelledError`. `with RequestScope(cancel=token):` covers every request in the block. An explicit `cancel=` wins over the scope. Uncancelled calls keep the shared client.
 
 ## Content retrieval
 
@@ -57,6 +68,15 @@ pages = exa.fetch(urls=urls, include_meta=True, max_characters=6000)
 for page in pages["results"]:
     print(page.get("url"), page.get("status"), page.get("error"))
     print(page.get("text"))
+
+cached = exa.search(
+    "nearest pharmacy open now", mode="lite", num_results=5,
+    objective="Prefer pages that name hours and a street address.",
+    user_location={"latitude": 37.77, "longitude": -122.42},
+    highlights_dynamic=True, highlights_verbosity="low",
+)
+print(cached.notices)
+print(cached.to_agent())
 ```
 
 Use exactly one of `urls` or `ids`. `include_meta=True` guarantees an envelope
@@ -68,7 +88,20 @@ plain-text result—even when the input was a one-element list.
 than guaranteeing faithful Markdown; `highlights` and `summary` request excerpts
 and generated summaries. Use `with_highlights`, `highlights_query`,
 `with_summary`, `summary_query`, and `summary_schema` for targeted extraction.
-`max_characters` and highlight caps can truncate relevant evidence.
+`max_characters` and highlight caps are 1–1000000 and can truncate evidence.
+`highlights_dynamic=True` or `highlights_verbosity` (`low` | `medium` | `high`)
+sends `Exa-Beta: dynamic-highlights-2026-08-28`. The 3.0 announcement calls
+Dynamic Highlights generally available; the OpenAPI spec still rejects those
+fields without the header. Neither is compatible with `highlights_max_characters`.
+`snapshot_as_of` is `YYYY-MM-DD` or an ISO date-time, returns a stored version,
+never live-fetches, and is allowed on `lite`. `max_age_hours` is -1 (cache) through
+720; `0` requests a fresh fetch. `lite` rejects freshness.
+
+`.warnings` (code, path, message) are request diagnostics: logged as `ExaWarning`
+and omitted from `to_agent()`. `.notices` travel with the results; `to_agent()`
+and `run()` include them. `resolved_search_type` may be empty; do not branch on it.
+Product, local-business, sports, weather, market, flight, event, transit, and
+podcast coverage is natural-language index coverage, not a new category.
 
 Advanced options include `text_verbosity`, `include_sections`, `exclude_sections`,
 `include_html_tags`, `subpages`, `subpage_target`, `extras_links`,
@@ -76,7 +109,7 @@ Advanced options include `text_verbosity`, `include_sections`, `exclude_sections
 `extras_code_blocks`. Sections and subpages may be absent. Inspect the relevant
 function signature: not every operation accepts every content option.
 
-`max_age_hours`, `livecrawl`, and `livecrawl_timeout` request content freshness.
+`max_age_hours` requests content freshness. `livecrawl` and `livecrawl_timeout` still send and warn; prefer `max_age_hours`.
 The client documents `max_age_hours=0` as fresh and `-1` as cache-only; inspect
 returned status/source rather than assuming a crawl succeeded. `compliance`
 is a server feature request, not a certification of the caller's workflow.
