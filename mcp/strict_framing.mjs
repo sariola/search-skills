@@ -182,6 +182,29 @@ function runCase(spec) {
   });
 }
 
+if (dir === "exa") {
+  for (const spec of cases) {
+    const prior = spec.check;
+    const params = { name: "exa_search", arguments: { query: "x", searchType: "lite", withSummary: true } };
+    spec.steps.push([300, (rpc) => rpc(5, "tools/call", spec.name === "2026-07-28" ? modernParams(params) : params)]);
+    spec.check = (messages) => {
+      const base = prior(messages);
+      if (base) return base;
+      const call = messages.find((m) => m.id === 5);
+      const result = call?.result;
+      if (!result?.isError) return "lite+summary did not return isError";
+      if (result.structuredContent?.category !== "bad_request") {
+        return `lite+summary category ${result.structuredContent?.category ?? "missing"}`;
+      }
+      const block = result.content?.[0];
+      if (JSON.stringify(result.structuredContent) !== JSON.stringify(block?._meta)) {
+        return "lite+summary structuredContent and content[0]._meta differ";
+      }
+      return null;
+    };
+  }
+}
+
 let failed = 0;
 for (const spec of cases) {
   const result = await runCase(spec);

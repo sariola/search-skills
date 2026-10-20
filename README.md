@@ -78,8 +78,10 @@ and Claude Code config). No credentials are ever printed.
 Both servers follow the Linear MCP decision-making style: the tool set stays
 small, but the high-impact knobs that actually shape results are exposed with
 inline defaults and allowed values so a model picks them without guessing —
-e.g. Exa published-date ranges, search depth, vertical `category`, and agent
-effort; Brave `freshness` (incl. date ranges), per-result `extra` snippets,
+e.g. Exa `searchType` `lite` / `auto` / `deep`, published-date ranges,
+`objective`, country or lat/long `userLocation`, dynamic highlights,
+`snapshotAsOf`, and agent `effort` including `ultra`; Brave `freshness`
+(incl. date ranges), per-result `extra` snippets,
 image licensing/transparency filters, and place `radius`. Every tool errors
 with `isError: true` plus a machine-readable `category`, and enum/range args
 are validated client-side before the wire call.

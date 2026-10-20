@@ -29,6 +29,9 @@ _EXA_INTENDED_NEW = {
 # fan out in parallel instead of running serially.
 _EXA_INTENDED_DRIFT = {
     "deep_research",
+    # Exa 3.0 search parameters (lite, objective, user location, dynamic highlights).
+    "search", "run", "fetch", "find_similar", "answer", "stream_answer", "agent",
+    "monitor_create",
 }
 
 # Intentional feature-adds to the brave surface: Brave's newer retrieval
@@ -47,7 +50,7 @@ _BRAVE_INTENDED_DRIFT = set()
 # Pinned surface counts. exa grew its public surface with the agent-stop +
 # batches additions after the Phase-1 baseline; brave grew with the four
 # newer retrieval endpoints.
-_EXA_COUNT = 131
+_EXA_COUNT = 133
 _BRAVE_COUNT = 82
 
 

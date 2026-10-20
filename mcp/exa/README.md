@@ -48,35 +48,50 @@ the right granular choice.
    - Required: `query`
    - Recency (the biggest lever): `startPublishedDate` / `endPublishedDate`
      (ISO 8601) — only results published in that window are returned.
-   - `numResults` (1–100, default 10), `searchType`
-     (`instant` / `fast` / `auto` (default) / `deep-lite` / `deep` /
-     `deep-reasoning`), `category` (`company` / `publication` / `news` /
-     `personal site` / `financial report` / `people`; other strings act as
-     hints).
+   - `numResults` (1–100, default 10), `searchType` (open string). Recommended:
+     `lite` (cached, $4/1k up to 10 results plus $1/1k above that; rejects
+     freshness, summary, and synthesis), `auto` (default, $7/1k), `deep`.
+     Also `deep-lite`. Legacy `instant` / `fast` (use `lite`) and
+     `deep-reasoning` (use `deep`) still send. `category` (`company` /
+     `publication` / `news` / `personal site` / `financial report` / `people`;
+     other strings act as hints).
    - Domains: `includeDomains`, `excludeDomains` (use these instead of `site:`
      in the query).
-   - Per-result content: `withHighlights` (+ `highlightsQuery`), `withText`
-     (+ `textMaxCharacters` 1–10000, `textVerbosity` `compact`/`standard`/
-     `full`), `withSummary` (+ `summaryQuery`), `links` / `imageLinks` (0–1000).
-   - `userLocation` (2-letter ISO), `outputSchema` (adds a synthesized,
-     citation-grounded answer to the same call).
-   - Note: `company`/`people` do **not** support the date filters or
-     `excludeDomains` (the API returns 400); the server rejects that combo
-     client-side.
+   - `objective` (max 4096), `userIdentifier` (1–64 `[A-Za-z0-9_-]`, no PII),
+     `moderation`, `compliance` (`hipaa`), `systemPrompt`, `additionalQueries`
+     (1–10, deep types only).
+   - Per-result content: `withHighlights` (+ `highlightsQuery`,
+     `highlightsMaxCharacters` 1–1000000, `highlightsDynamic`,
+     `highlightsVerbosity` `low`/`medium`/`high`), `withText`
+     (+ `textMaxCharacters` 1–1000000, `textVerbosity` `compact`/`standard`/
+     `full`), `withSummary` (+ `summaryQuery`), `links` / `imageLinks` (0–1000),
+     `maxAgeHours` (-1–720), `snapshotAsOf` (ISO date or date-time).
+   - `userLocation`: a 2-letter ISO country code, or
+     `{country?, latitude, longitude}`. `outputSchema` adds a synthesized,
+     citation-grounded answer (rejected by `lite`).
+   - `company` and `people` reject published-date filters. `people` also
+     rejects `excludeDomains`. `company` may use `excludeDomains`. The server
+     rejects those combinations client-side.
+   - Response `notices` are included in the tool text and the result bag.
+     `warnings` are logged and returned in the bag; do not feed them to a model.
 
 2. **`exa_fetch`** — deep-read URLs / document ids (`POST /contents`)
-   - `urls` or `ids` (one required), `withText` (+ `textMaxCharacters`,
-     `textVerbosity`), `withHighlights` (+ `highlightsQuery`), `withSummary`
-     (+ `summaryQuery`), `links` / `imageLinks` (0–1000), `subpages` (0–100),
-     `subpageTarget`, `maxAgeHours` (0 = force fresh, -1 = cache).
+   - `urls` or `ids` (one required), `withText` (+ `textMaxCharacters` 1–1000000,
+     `textVerbosity`), `withHighlights` (+ `highlightsQuery`,
+     `highlightsMaxCharacters`, `highlightsDynamic`, `highlightsVerbosity`),
+     `withSummary` (+ `summaryQuery`), `links` / `imageLinks` (0–1000),
+     `subpages` (0–100), `subpageTarget`, `maxAgeHours` (-1–720; 0 = fresh,
+     -1 = cache), `snapshotAsOf`, `userIdentifier`.
 
 3. **`exa_answer`** — citation-grounded answer (`POST /answer`)
    - Required: `query`; optional `text`, `outputSchema`, `systemPrompt`,
-     `userLocation`.
+     `userLocation` (country code or `{country?, latitude, longitude}`),
+     `userIdentifier`.
 
 4. **`exa_agent`** — full agentic research run (`POST /agent/runs`, polled)
    - Required: `query` (top-level, per `CreateAgentRunRequest`); optional
-     `effort` (`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`auto`),
+     `effort` (`minimal`/`low`/`medium`/`high`/`xhigh`/`ultra`/`max`/`auto`),
+     `userIdentifier`,
      `systemPrompt`, `outputSchema`, `maxCostDollars` (1–100, default $5 cap on
      `auto`), `timeout` (default 120s). Requires a plan that enables
      `/agent/runs`.
@@ -84,7 +99,8 @@ the right granular choice.
 5. **`exa_find_similar`** — more-like-this (`POST /findSimilar`)
    - Required: `url`; optional `numResults` (1–100), `category`,
      `excludeSourceDomain`, `includeDomains`, `excludeDomains`,
-     `startPublishedDate` / `endPublishedDate`.
+     `startPublishedDate` / `endPublishedDate`, `withText`, `withHighlights`
+     (`highlightsDynamic`, `highlightsVerbosity`), `snapshotAsOf`, `maxAgeHours`.
 
 ### Resources
 
@@ -108,6 +124,8 @@ each (prefer `exa_search → exa_fetch` over `exa_agent` for speed/cost).
    filters).
 5. "Research the state of solid-state batteries and cite sources" →
    `exa_agent` with an `outputSchema`.
+6. "Autocomplete a product query cheaply" → `exa_search` with `searchType=lite`,
+   `highlightsDynamic=true`, and a `userLocation`.
 
 ## Development
 
@@ -135,12 +153,13 @@ bun probe.mjs        # deeper: date-range search, category, contents extras,
   and `content[0]._meta` (`auth`, `plan`, `not_found`, `rate_limit`,
   `bad_request`, `server`, `http`) so callers can
   distinguish a bad key from a plan-gated endpoint.
-- Client-side validation: enum-like args (`searchType`, `effort`,
-  `textVerbosity`) and range args (`numResults`, `maxCharacters`, `links`,
-  `subpages`) are checked before the wire call, so a bad value returns a precise
-  `bad_request` error instead of a raw API 400. The server also rejects a
-  `company`/`people` search that carries a date filter or `excludeDomains`
-  (the API 400s for that).
+- Client-side validation: `effort`, `textVerbosity`, and `highlightsVerbosity`,
+  plus range args (`numResults`, character caps 1–1000000, `links`, `subpages`,
+  `maxAgeHours`) are checked before the wire call. `searchType` is an open
+  string; `lite` plus a parameter outside its allowlist is a client-side
+  `bad_request`. `company` and `people` reject date filters; `people` also
+  rejects `excludeDomains`. Dynamic highlights send
+  `Exa-Beta: dynamic-highlights-2026-08-28`.
 - No credentials are ever printed.
 
 ## License

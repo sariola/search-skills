@@ -11,6 +11,7 @@ import os
 import re
 import time
 import urllib.parse
+import warnings
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Union
@@ -208,6 +209,30 @@ __version__ = "0.19.0"
 #     cancel/delete). Omitting it 403s even on plans that enable /batches.
 AGENT_STOP_BETA_HEADER = "agent-max-effort-2026-07-27"
 BATCHES_BETA_HEADER = "batches-2026-06-06"
+# Dynamic Highlights and highlight verbosity are still a beta in the OpenAPI
+# spec (requests without this header are rejected), even though the Exa 3.0
+# blog calls the feature generally available. Sent only when dynamic or
+# verbosity is set.
+DYNAMIC_HIGHLIGHTS_BETA = "dynamic-highlights-2026-08-28"
+HIGHLIGHT_VERBOSITIES = ("low", "medium", "high")
+_USER_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SNAPSHOT_AS_OF_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$"
+)
+# SearchRequest.type is an open enum. These are the values the spec names.
+# instant / fast / deep-reasoning keep working and are marked legacy.
+LEGACY_SEARCH_TYPES = {
+    "instant": "lite",
+    "fast": "lite",
+    "deep-reasoning": "deep",
+}
+# lite rejects every other field with a 400 that names it.
+_LITE_TOP_LEVEL = {
+    "query", "type", "objective", "userIdentifier", "category", "numResults",
+    "contents", "userLocation", "includeDomains", "excludeDomains",
+    "startPublishedDate", "endPublishedDate", "moderation", "compliance",
+}
+_LITE_CONTENTS = {"highlights", "text", "snapshotAsOf"}
 
 # Exa categories the API actually honors (from the current OpenAPI enum):
 #   company | publication | news | personal site | financial report | people
@@ -223,7 +248,7 @@ VALID_CATEGORIES = {
 # neural + keyword for broad recall. `semantic` is NOT valid (400s at the API —
 # use `neural` for the semantic mode). `magic` is a legacy alias we map to `deep`.
 SEARCH_TYPES = {
-    "auto", "instant", "fast", "deep-lite", "deep", "deep-reasoning",
+    "auto", "lite", "instant", "fast", "deep-lite", "deep", "deep-reasoning",
     "keyword", "neural", "hybrid", "magic",
 }
 
@@ -240,6 +265,7 @@ MODES = {
     "personal-site": {"category": "personal site",   "search_type": "auto", "hint": "Personal blogs, portfolios (was exa-personal-site-search)."},
     "personal":      {"category": "personal site",   "search_type": "auto", "hint": "Alias for `personal-site`."},
     "news":          {"category": "news",            "search_type": "auto", "hint": "Fresh articles and announcements."},
+    "lite":          {"category": None,             "search_type": "lite", "hint": "Low-cost cached search (type=lite). Rejects freshness, summary, and synthesis."},
     "lead":          {"category": "company",         "search_type": "auto", "hint": "Lead / prospect generation (was exa-lead-generation)."},
     "lead-generation": {"category": "company",       "search_type": "auto", "hint": "Alias for `lead`."},
     "websets":       {"category": "company",         "search_type": "auto", "hint": "Entity-list / collection mode (was exa-websets)."},
@@ -272,6 +298,13 @@ class ExaNotFoundError(ExaError):
 
 class ExaServerError(ExaError):
     """5xx: transient Exa-side failure. Retry with backoff; if it persists, contact Exa."""
+
+
+class ExaWarning(UserWarning):
+    """A search response ``warnings[]`` entry: a request field was accepted and had no effect.
+
+    Log it. Do not pass it to a model. ``notices`` are the model-facing counterpart.
+    """
 
 
 _API_KEY_NAMES = ['EXA_API_KEY']
@@ -962,7 +995,8 @@ class SearchResults:
     """
 
     def __init__(self, query, results, *, raw=None, request_id="", cost_dollars=None,
-                 output=None, resolved_search_type="", search_time_ms=None):
+                 output=None, resolved_search_type="", search_time_ms=None,
+                 warnings_out=None, notices=None):
         self.query = query
         self.results = list(results)
         self.raw = raw
@@ -972,6 +1006,8 @@ class SearchResults:
         self.resolved_search_type = resolved_search_type or (raw or {}).get("resolvedSearchType") or ""
         st = search_time_ms if search_time_ms is not None else (raw or {}).get("searchTime")
         self.search_time_ms: Optional[float] = float(st) if st is not None else None
+        self.warnings = list(warnings_out if warnings_out is not None else _api_warnings(raw))
+        self.notices = list(notices if notices is not None else _api_notices(raw))
 
     # -- request metadata / cost helpers (v0.11) ----------------------------
     @property
@@ -1057,6 +1093,8 @@ class SearchResults:
             out["cost"] = cost
         if self.request_id:
             out["request_id"] = self.request_id
+        if self.notices:
+            out["notices"] = self.notices
         return out
 
     def to_meta(self) -> dict:
@@ -1065,9 +1103,11 @@ class SearchResults:
             "query": self.query,
             "count": len(self.results),
             "request_id": self.request_id,
-            "resolved_search_type": self.resolved_search_type or "auto",
+            "resolved_search_type": self.resolved_search_type,
             "search_time_ms": self.search_time_ms,
             "cost_dollars": self.cost_dollars,
+            "warnings": self.warnings,
+            "notices": self.notices,
         }
 
     def to_json(self, indent: int = 2, *, include_meta: bool = False) -> str:
@@ -1211,15 +1251,191 @@ def _category_canon(category: Optional[str]) -> Optional[str]:
     return None
 
 
+def _deprecated(param: str, instead: str) -> None:
+    """Warn once per call site. ``-W error::DeprecationWarning`` (nix flake check) catches these."""
+    warnings.warn(f"{param} is deprecated. {instead}", DeprecationWarning, stacklevel=3)
+
+
 def _resolve_search_type(search_type: Optional[str], default: str) -> str:
+    """Resolve ``type``. Known names stay for callers; any other non-empty string is sent as-is.
+
+    The OpenAPI ``type`` field is an open enum (``x-exa-enum-open``). ``instant``,
+    ``fast``, and ``deep-reasoning`` still work and are legacy.
+    """
     if search_type is None:
         return default
     st = str(search_type).strip().lower()
+    if not st:
+        raise ExaError("search_type must be a non-empty string.")
     if st == "magic":
-        st = "deep"  # legacy name for the deep semantic answer mode
-    if st not in SEARCH_TYPES:
-        raise ExaError(f"Unknown search_type '{search_type}'. Options: {', '.join(sorted(SEARCH_TYPES))}")
+        _deprecated("search_type='magic'", "It is sent as 'deep'.")
+        st = "deep"
+    replacement = LEGACY_SEARCH_TYPES.get(st)
+    if replacement:
+        _deprecated(
+            f"search_type={st!r}",
+            f"Use {replacement!r} for new requests (or 'auto'). The legacy type is still sent.",
+        )
     return st
+
+
+def _normalize_user_location(value):
+    """Country code, or ``{country?, latitude, longitude}``. ``None`` when omitted."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        code = value.strip()
+        if len(code) != 2 or not code.isalpha():
+            raise ExaBadRequestError(
+                "user_location as a string must be a 2-letter ISO 3166-1 country code."
+            )
+        return code
+    if isinstance(value, dict):
+        extra = set(value) - {"country", "latitude", "longitude"}
+        if extra:
+            raise ExaBadRequestError(
+                f"user_location has unknown keys: {', '.join(sorted(extra))}."
+            )
+        country = value.get("country")
+        lat = value.get("latitude")
+        lon = value.get("longitude")
+        if country is not None:
+            if not isinstance(country, str) or len(country.strip()) != 2 or not country.strip().isalpha():
+                raise ExaBadRequestError("user_location.country must be a 2-letter ISO country code.")
+            country = country.strip()
+        if (lat is None) != (lon is None):
+            raise ExaBadRequestError("user_location latitude and longitude must be sent together.")
+        if lat is None and lon is None:
+            if not country:
+                raise ExaBadRequestError(
+                    "user_location needs a country and/or a latitude+longitude pair."
+                )
+            return {"country": country}
+        if isinstance(lat, bool) or isinstance(lon, bool) or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            raise ExaBadRequestError("user_location latitude and longitude must be numbers.")
+        if not (-90 <= float(lat) <= 90) or not (-180 <= float(lon) <= 180):
+            raise ExaBadRequestError(
+                "user_location latitude must be between -90 and 90 and longitude between -180 and 180."
+            )
+        out: Dict[str, Any] = {"latitude": float(lat), "longitude": float(lon)}
+        if country:
+            out["country"] = country
+        return out
+    raise ExaBadRequestError(
+        "user_location must be a 2-letter country code or an object with country and/or latitude+longitude."
+    )
+
+
+def _normalize_user_identifier(value):
+    if value is None or value == "":
+        return None
+    text = str(value)
+    if not _USER_IDENTIFIER_RE.match(text):
+        raise ExaBadRequestError(
+            "user_identifier must be 1-64 characters of letters, digits, underscores, "
+            "and hyphens, and must not contain personal information."
+        )
+    return text
+
+
+def _normalize_objective(value):
+    if value is None or value == "":
+        return None
+    text = str(value)
+    if len(text) > 4096:
+        raise ExaBadRequestError(f"objective must be at most 4096 characters (got {len(text)}).")
+    return text
+
+
+def _normalize_snapshot_as_of(value):
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if not _SNAPSHOT_AS_OF_RE.match(text):
+        raise ExaBadRequestError(
+            "snapshot_as_of must be an ISO date (YYYY-MM-DD) or date-time "
+            "(YYYY-MM-DDThh:mm:ssZ)."
+        )
+    return text
+
+
+def _reject_lite(body: dict) -> None:
+    """lite 400s on any parameter outside its allowlist, naming the field."""
+    if body.get("type") != "lite":
+        return
+    bad = [k for k in body if k not in _LITE_TOP_LEVEL]
+    contents = body.get("contents") or {}
+    if isinstance(contents, dict):
+        bad.extend(f"contents.{k}" for k in contents if k not in _LITE_CONTENTS)
+    elif contents:
+        bad.append("contents")
+    if bad:
+        raise ExaBadRequestError(
+            "search type 'lite' rejects "
+            + ", ".join(bad)
+            + ". It accepts query, objective, userIdentifier, category, numResults, "
+            "contents.highlights, contents.text, contents.snapshotAsOf, userLocation, "
+            "includeDomains, excludeDomains, startPublishedDate, endPublishedDate, "
+            "moderation, and compliance. Cached content only: freshness options are rejected. "
+            "Use type 'auto' when you need the other options."
+        )
+
+
+def _dynamic_highlights_headers(contents: Optional[dict]) -> Optional[dict]:
+    highlights = (contents or {}).get("highlights") if isinstance(contents, dict) else None
+    if isinstance(highlights, dict) and (highlights.get("dynamic") or highlights.get("verbosity")):
+        return {"Exa-Beta": DYNAMIC_HIGHLIGHTS_BETA}
+    return None
+
+
+def _api_warnings(data) -> List[dict]:
+    """Parse ``warnings`` and emit one ``ExaWarning`` each. Empty when the field is omitted."""
+    out: List[dict] = []
+    for item in (data or {}).get("warnings") or []:
+        if not isinstance(item, dict):
+            continue
+        parsed = {
+            "code": item.get("code") or "",
+            "path": item.get("path") or "",
+            "message": item.get("message") or "",
+        }
+        warnings.warn(
+            f"Exa warning {parsed['code']} at {parsed['path']}: {parsed['message']}",
+            ExaWarning,
+            stacklevel=3,
+        )
+        out.append(parsed)
+    return out
+
+
+def _api_notices(data) -> List[dict]:
+    """Parse ``notices``. These are meant to be shown to a model with the results."""
+    out: List[dict] = []
+    for item in (data or {}).get("notices") or []:
+        if not isinstance(item, dict):
+            continue
+        parsed = {
+            "code": item.get("code") or "",
+            "path": item.get("path") or "",
+            "message": item.get("message") or "",
+        }
+        if isinstance(item.get("details"), dict):
+            parsed["details"] = item["details"]
+        out.append(parsed)
+    return out
+
+
+def _search_results_from(query: str, data: dict) -> SearchResults:
+    warned = _api_warnings(data)
+    notices = _api_notices(data)
+    results = [Result(r, i + 1) for i, r in enumerate(data.get("results", []))]
+    return SearchResults(
+        query=query, results=results, request_id=data.get("requestId"),
+        cost_dollars=data.get("costDollars"), output=data.get("output"),
+        resolved_search_type=data.get("resolvedSearchType"),
+        search_time_ms=data.get("searchTime"), raw=data,
+        warnings_out=warned, notices=notices,
+    )
 
 
 def _mode_args(mode: str, category: Optional[str], search_type: Optional[str]):
@@ -1242,28 +1458,30 @@ def _validate_search_params(num_results, max_characters, category,
             "contact hello@exa.ai to raise your plan. You can also page with "
             "start_published_date/end_published_date or additional_queries."
         )
-    if max_characters is not None and max_characters > 10000:
-        raise ExaError(f"max_characters must be <= 10000 (got {max_characters}). The API caps "
-                       "per-result text at 10000 characters.")
-    if category in ("company", "people"):
-        if start_published_date or end_published_date:
-            raise ExaError(
-                f"Category '{category}' does not support published-date filters "
-                "(start_published_date / end_published_date) — the API returns a "
-                "400. Drop the dates or use a different category (e.g. 'news')."
-            )
-        if exclude_domains:
-            raise ExaError(
-                f"Category '{category}' does not support exclude_domains — the API "
-                "returns a 400. Use include_domains to restrict results instead."
-            )
+    if max_characters is not None and (max_characters < 1 or max_characters > 1_000_000):
+        raise ExaError(
+            f"max_characters must be between 1 and 1000000 (got {max_characters})."
+        )
+    if category in ("company", "people") and (start_published_date or end_published_date):
+        raise ExaError(
+            f"Category '{category}' does not support published-date filters "
+            "(start_published_date / end_published_date) — the API returns a "
+            "400. Drop the dates or use a different category (e.g. 'news')."
+        )
+    if category == "people" and exclude_domains:
+        raise ExaError(
+            "Category 'people' does not support exclude_domains — the API "
+            "returns a 400. Use include_domains to restrict results instead."
+        )
 
 
 def _contents_block(*, with_text=False, max_characters=None, text_verbosity=None,
                     with_highlights=False, highlights_query=None, highlights_max=None,
+                    highlights_dynamic=False, highlights_verbosity=None,
                     with_summary=False, summary_query=None, summary_schema=None,
                     extras_links=0, extras_image_links=0, extras_rich_links=0,
                     extras_rich_image_links=0, extras_code_blocks=0, max_age_hours=None,
+                    snapshot_as_of=None, filter_empty_results=False,
                     subpages=0, subpage_target=None, livecrawl=False, livecrawl_timeout=None,
                     include_sections=None, exclude_sections=None, include_html_tags=False) -> dict:
     """Build an Exa ``contents`` block, only including keys that were set.
@@ -1292,13 +1510,41 @@ def _contents_block(*, with_text=False, max_characters=None, text_verbosity=None
                 t["excludeSections"] = exclude_sections
             c["text"] = t
 
-    if with_highlights:
-        if highlights_query or highlights_max:
+    want_highlights = bool(
+        with_highlights or highlights_query or highlights_max
+        or highlights_dynamic or highlights_verbosity
+    )
+    if highlights_max is not None and (highlights_max < 1 or highlights_max > 1_000_000):
+        raise ExaBadRequestError(
+            f"highlights_max_characters must be between 1 and 1000000 (got {highlights_max})."
+        )
+    if max_characters is not None and (max_characters < 1 or max_characters > 1_000_000):
+        raise ExaError(f"max_characters must be between 1 and 1000000 (got {max_characters}).")
+    if highlights_verbosity is not None and highlights_verbosity not in HIGHLIGHT_VERBOSITIES:
+        raise ExaBadRequestError(
+            "highlights_verbosity must be one of low, medium, high "
+            f"(got {highlights_verbosity!r})."
+        )
+    if highlights_dynamic and highlights_max:
+        raise ExaBadRequestError(
+            "highlights_dynamic is not compatible with highlights_max_characters."
+        )
+    if highlights_verbosity and highlights_max:
+        raise ExaBadRequestError(
+            "highlights_verbosity is not compatible with highlights_max_characters."
+        )
+    if want_highlights:
+        advanced = bool(highlights_query or highlights_max or highlights_dynamic or highlights_verbosity)
+        if advanced:
             h: dict[str, Any] = {}
             if highlights_query:
                 h["query"] = highlights_query
             if highlights_max:
                 h["maxCharacters"] = highlights_max
+            if highlights_verbosity:
+                h["verbosity"] = highlights_verbosity
+            if highlights_dynamic:
+                h["dynamic"] = True
             c["highlights"] = h
         else:
             c["highlights"] = True
@@ -1325,6 +1571,11 @@ def _contents_block(*, with_text=False, max_characters=None, text_verbosity=None
 
     if max_age_hours is not None:
         c["maxAgeHours"] = max_age_hours
+    snap = _normalize_snapshot_as_of(snapshot_as_of)
+    if snap:
+        c["snapshotAsOf"] = snap
+    if filter_empty_results:
+        c["filterEmptyResults"] = True
     if subpages:
         c["subpages"] = subpages
     if subpage_target:
@@ -1362,6 +1613,8 @@ def search(
     with_highlights: bool = False,
     highlights_query: Optional[str] = None,
     highlights_max_characters: Optional[int] = None,
+    highlights_dynamic: bool = False,
+    highlights_verbosity: Optional[str] = None,
     with_summary: bool = False,
     summary_query: Optional[str] = None,
     summary_schema: Optional[dict] = None,
@@ -1371,6 +1624,7 @@ def search(
     extras_rich_image_links: int = 0,
     extras_code_blocks: int = 0,
     max_age_hours: Optional[int] = None,
+    snapshot_as_of: Optional[str] = None,
     subpages: int = 0,
     subpage_target=None,
     # semantic section / HTML / livecrawl controls (advanced content) -----
@@ -1380,7 +1634,9 @@ def search(
     output_schema: Optional[dict] = None,
     system_prompt: Optional[str] = None,
     additional_queries=None,
-    user_location: Optional[str] = None,
+    objective: Optional[str] = None,
+    user_location: Optional[Union[str, dict]] = None,
+    user_identifier: Optional[str] = None,
     moderation: bool = False,
     compliance: Optional[str] = None,
     context: Optional[str] = None,
@@ -1407,6 +1663,14 @@ def search(
     ``.answer`` holds the synthesized content and ``.answer_grounding`` the
     per-field source citations.
 
+    Exa 3.0: ``search_type="lite"`` is the low-cost cached type (default: auto).
+    ``objective`` is the task this query serves (max 4096). ``user_location``
+    is a 2-letter country code or ``{country, latitude, longitude}``.
+    ``highlights_dynamic=True`` (or ``highlights_verbosity`` of low|medium|high)
+    sends ``Exa-Beta: dynamic-highlights-2026-08-28``. ``snapshot_as_of`` pins
+    cached page text to an ISO date or date-time. Response ``.notices`` are for
+    the model; ``.warnings`` are request diagnostics.
+
     Returns:
         A SearchResults (iterable of Result, with metadata + synthesis).
     """
@@ -1423,29 +1687,47 @@ def search(
         body["category"] = cat
     if start_published_date: body["startPublishedDate"] = start_published_date
     if end_published_date:   body["endPublishedDate"] = end_published_date
-    if start_crawl_date:     body["startCrawlDate"] = start_crawl_date
-    if end_crawl_date:       body["endCrawlDate"] = end_crawl_date
+    if start_crawl_date:
+        _deprecated("start_crawl_date", "The API ignores it. Use start_published_date.")
+        body["startCrawlDate"] = start_crawl_date
+    if end_crawl_date:
+        _deprecated("end_crawl_date", "The API ignores it. Use end_published_date.")
+        body["endCrawlDate"] = end_crawl_date
     if include_domains:      body["includeDomains"] = include_domains
     if exclude_domains:      body["excludeDomains"] = exclude_domains
-
-    # text filter sub-block (search, not content extraction)
-    tf: dict[str, Any] = {}
-    if text_include: tf["include"] = text_include
-    if text_exclude: tf["exclude"] = text_exclude
-    if tf:
-        body["text"] = tf
+    if text_include:
+        _deprecated("text_include", "It is sent as deprecated includeText.")
+        body["includeText"] = list(text_include)
+    if text_exclude:
+        _deprecated("text_exclude", "It is sent as deprecated excludeText.")
+        body["excludeText"] = list(text_exclude)
+    if subpages or subpage_target:
+        _deprecated(
+            "subpages/subpage_target on search",
+            "Send the result URLs to fetch() with subpages.",
+        )
+    if livecrawl:
+        _deprecated("livecrawl", "Use max_age_hours (0 fresh, -1 cache only).")
+    if extras_rich_links:
+        _deprecated("extras_rich_links", "Use extras_links.")
+    if extras_code_blocks:
+        _deprecated("extras_code_blocks", "The API ignores it.")
+    if context:
+        _deprecated("context", "Use with_highlights or with_text.")
 
     contents = _contents_block(
         with_text=with_text,
         max_characters=(max_characters if max_characters else None),
         text_verbosity=text_verbosity,
         with_highlights=with_highlights, highlights_query=highlights_query,
-        highlights_max=highlights_max_characters, with_summary=with_summary,
+        highlights_max=highlights_max_characters,
+        highlights_dynamic=highlights_dynamic, highlights_verbosity=highlights_verbosity,
+        with_summary=with_summary,
         summary_query=summary_query, summary_schema=summary_schema,
         extras_links=extras_links, extras_image_links=extras_image_links,
         extras_rich_links=extras_rich_links, extras_rich_image_links=extras_rich_image_links,
         extras_code_blocks=extras_code_blocks,
-        max_age_hours=max_age_hours,
+        max_age_hours=max_age_hours, snapshot_as_of=snapshot_as_of,
         subpages=subpages, subpage_target=subpage_target,
         include_sections=include_sections, exclude_sections=exclude_sections,
         include_html_tags=include_html_tags, livecrawl=livecrawl,
@@ -1460,8 +1742,15 @@ def search(
         body["systemPrompt"] = system_prompt
     if additional_queries:
         body["additionalQueries"] = additional_queries
-    if user_location:
-        body["userLocation"] = user_location
+    objective_text = _normalize_objective(objective)
+    if objective_text:
+        body["objective"] = objective_text
+    location = _normalize_user_location(user_location)
+    if location:
+        body["userLocation"] = location
+    identifier = _normalize_user_identifier(user_identifier)
+    if identifier:
+        body["userIdentifier"] = identifier
     if moderation:
         body["moderation"] = True
     if compliance:
@@ -1470,13 +1759,13 @@ def search(
         body["context"] = context
     if stream:
         body["stream"] = True
+    _reject_lite(body)
 
-    data = _request("POST", "/search", key, json_body=body, timeout=timeout)
-    results = [Result(r, i + 1) for i, r in enumerate(data.get("results", []))]
-    return SearchResults(query=query, results=results, request_id=data.get("requestId"),
-                         cost_dollars=data.get("costDollars"), output=data.get("output"),
-                         resolved_search_type=data.get("resolvedSearchType"),
-                         search_time_ms=data.get("searchTime"), raw=data)
+    data = _request(
+        "POST", "/search", key, json_body=body, timeout=timeout,
+        extra_headers=_dynamic_highlights_headers(contents),
+    )
+    return _search_results_from(query, data)
 
 
 # ---------------------------------------------------------------------------
@@ -1532,6 +1821,8 @@ def run(
     with_highlights: bool = False,
     highlights_query: Optional[str] = None,
     highlights_max_characters: Optional[int] = None,
+    highlights_dynamic: bool = False,
+    highlights_verbosity: Optional[str] = None,
     with_summary: bool = False,
     summary_query: Optional[str] = None,
     summary_schema: Optional[dict] = None,
@@ -1541,6 +1832,7 @@ def run(
     extras_rich_image_links: int = 0,
     extras_code_blocks: int = 0,
     max_age_hours: Optional[int] = None,
+    snapshot_as_of: Optional[str] = None,
     subpages: int = 0,
     subpage_target=None,
     include_sections=None, exclude_sections=None, include_html_tags: bool = False,
@@ -1548,7 +1840,9 @@ def run(
     output_schema: Optional[dict] = None,
     system_prompt: Optional[str] = None,
     additional_queries=None,
-    user_location: Optional[str] = None,
+    objective: Optional[str] = None,
+    user_location: Optional[Union[str, dict]] = None,
+    user_identifier: Optional[str] = None,
     moderation: bool = False,
     compliance: Optional[str] = None,
     context: Optional[str] = None,
@@ -1580,23 +1874,30 @@ def run(
         text_verbosity=text_verbosity,
         with_highlights=with_highlights, highlights_query=highlights_query,
         highlights_max_characters=highlights_max_characters,
+        highlights_dynamic=highlights_dynamic, highlights_verbosity=highlights_verbosity,
         with_summary=with_summary, summary_query=summary_query,
         summary_schema=summary_schema,
         extras_links=extras_links, extras_image_links=extras_image_links,
         extras_rich_links=extras_rich_links, extras_rich_image_links=extras_rich_image_links,
         extras_code_blocks=extras_code_blocks,
-        max_age_hours=max_age_hours, subpages=subpages, subpage_target=subpage_target,
+        max_age_hours=max_age_hours, snapshot_as_of=snapshot_as_of,
+        subpages=subpages, subpage_target=subpage_target,
         include_sections=include_sections, exclude_sections=exclude_sections,
         include_html_tags=include_html_tags, livecrawl=livecrawl,
         livecrawl_timeout=livecrawl_timeout,
         output_schema=output_schema, system_prompt=system_prompt,
-        additional_queries=additional_queries, user_location=user_location,
+        additional_queries=additional_queries, objective=objective,
+        user_location=user_location, user_identifier=user_identifier,
         moderation=moderation, compliance=compliance, context=context,
         timeout=timeout,
     )
     lines = _fmt(res.results)
     if res.answer:
         lines += f"\n\n--- synthesized answer ---\n{res.answer}"
+    if res.notices:
+        lines += "\n\n--- notices ---\n" + "\n".join(
+            f"- {n.get('code')}: {n.get('message')}" for n in res.notices
+        )
     return lines
 
 
@@ -1613,6 +1914,8 @@ def fetch(
     with_highlights: bool = False,
     highlights_query: Optional[str] = None,
     highlights_max_characters: Optional[int] = None,
+    highlights_dynamic: bool = False,
+    highlights_verbosity: Optional[str] = None,
     with_summary: bool = False,
     summary_query: Optional[str] = None,
     summary_schema: Optional[dict] = None,
@@ -1622,12 +1925,14 @@ def fetch(
     extras_rich_image_links: int = 0,
     extras_code_blocks: int = 0,
     max_age_hours: Optional[int] = None,
+    snapshot_as_of: Optional[str] = None,
     subpages: int = 0,
     subpage_target=None,
     livecrawl: Optional[str] = None,
     livecrawl_timeout: Optional[int] = None,
     include_sections=None, exclude_sections=None, include_html_tags: bool = False,
     compliance: Optional[str] = None,
+    user_identifier: Optional[str] = None,
     include_meta: bool = False,
     timeout: float = 45.0,
 ) -> Union[List[dict], str, dict]:
@@ -1681,20 +1986,34 @@ def fetch(
         max_characters=max_characters, text_verbosity=text_verbosity,
         with_highlights=with_highlights, highlights_query=highlights_query,
         highlights_max=highlights_max_characters,
+        highlights_dynamic=highlights_dynamic, highlights_verbosity=highlights_verbosity,
         with_summary=with_summary, summary_query=summary_query, summary_schema=summary_schema,
         extras_links=extras_links, extras_image_links=extras_image_links,
         extras_rich_links=extras_rich_links, extras_rich_image_links=extras_rich_image_links,
         extras_code_blocks=extras_code_blocks, max_age_hours=max_age_hours,
+        snapshot_as_of=snapshot_as_of,
         subpages=subpages, subpage_target=subpage_target, livecrawl=livecrawl,
         livecrawl_timeout=livecrawl_timeout, include_sections=include_sections,
         exclude_sections=exclude_sections, include_html_tags=include_html_tags,
     )
+    if livecrawl:
+        _deprecated("livecrawl", "Use max_age_hours (0 fresh, -1 cache only).")
+    if extras_rich_links:
+        _deprecated("extras_rich_links", "Use extras_links.")
+    if extras_code_blocks:
+        _deprecated("extras_code_blocks", "The API ignores it.")
     # /contents accepts these keys at the top level
     body.update(contents)
     if compliance:
         body["compliance"] = compliance
+    identifier = _normalize_user_identifier(user_identifier)
+    if identifier:
+        body["userIdentifier"] = identifier
 
-    data = _request("POST", "/contents", key, json_body=body, timeout=timeout)
+    data = _request(
+        "POST", "/contents", key, json_body=body, timeout=timeout,
+        extra_headers=_dynamic_highlights_headers(contents),
+    )
     status_list = data.get("statuses", [])
     status_map = {s.get("id"): s for s in status_list}
     results: List[dict] = []
@@ -1828,6 +2147,9 @@ def answer(
     text: bool = False,
     stream: bool = False,
     citation_format: Optional[dict] = None,
+    system_prompt: Optional[str] = None,
+    user_location: Optional[Union[str, dict]] = None,
+    user_identifier: Optional[str] = None,
     timeout: float = 90.0,
 ) -> Answer:
     """Get a concise, citation-grounded answer to a natural-language question.
@@ -1869,6 +2191,14 @@ def answer(
         body["outputSchema"] = output_schema
     if citation_format:
         body["citationFormat"] = citation_format
+    if system_prompt:
+        body["systemPrompt"] = system_prompt
+    location = _normalize_user_location(user_location)
+    if location:
+        body["userLocation"] = location
+    identifier = _normalize_user_identifier(user_identifier)
+    if identifier:
+        body["userIdentifier"] = identifier
     body["stream"] = bool(stream)
     data = _request("POST", "/answer", key, json_body=body, timeout=timeout)
     return Answer(data)
@@ -2270,6 +2600,7 @@ def agent(
     data: Optional[List[dict]] = None,
     exclusion: Optional[List[dict]] = None,
     data_sources: Optional[List[str]] = None,
+    user_identifier: Optional[str] = None,
     timeout: float = 120.0,
     poll_interval: float = 2.0,
     raise_on_failed: bool = True,
@@ -2291,7 +2622,9 @@ def agent(
         output_schema: JSON Schema (draft-07/2019-09/2020-12). When given, the
             completed run's ``.structured`` holds validated structured output;
             fields unsupported by evidence may be ``null``.
-        effort: Cost/reasoning effort: minimal|low|medium|high|xhigh|auto (default).
+        effort: Cost/reasoning effort: minimal|low|medium|high|xhigh|ultra|auto (default).
+            ``ultra`` is the highest OpenAPI tier. ``max`` is still accepted for
+            the graceful-stop beta.
         previous_run_id: Completed run ID to continue from (same team).
         metadata: Arbitrary string KV to store with the run (your own tracking).
         data: JSON records for the agent to process/enrich as part of the run.
@@ -2326,6 +2659,9 @@ def agent(
         if len(data_sources) > 5:
             raise ExaError("agent(data_sources=...) supports at most 5 Exa Connect providers per run.")
         body["dataSources"] = [{"provider": p} for p in data_sources]
+    identifier = _normalize_user_identifier(user_identifier)
+    if identifier:
+        body["userIdentifier"] = identifier
     inp: dict[str, Any] = {}
     if data is not None:
         inp["data"] = list(data)
@@ -2457,6 +2793,8 @@ def find_similar(
     with_highlights: bool = False,
     highlights_query: Optional[str] = None,
     highlights_max_characters: Optional[int] = None,
+    highlights_dynamic: bool = False,
+    highlights_verbosity: Optional[str] = None,
     with_summary: bool = False,
     summary_query: Optional[str] = None,
     summary_schema: Optional[dict] = None,
@@ -2466,6 +2804,7 @@ def find_similar(
     extras_rich_image_links: int = 0,
     extras_code_blocks: int = 0,
     max_age_hours: Optional[int] = None,
+    snapshot_as_of: Optional[str] = None,
     subpages: int = 0,
     subpage_target=None,
     include_sections=None, exclude_sections=None, include_html_tags: bool = False,
@@ -2508,28 +2847,41 @@ def find_similar(
         body["startPublishedDate"] = start_published_date
     if end_published_date:
         body["endPublishedDate"] = end_published_date
+    if subpages or subpage_target:
+        _deprecated(
+            "subpages/subpage_target on find_similar",
+            "Send the result URLs to fetch() with subpages.",
+        )
+    if livecrawl:
+        _deprecated("livecrawl", "Use max_age_hours (0 fresh, -1 cache only).")
+    if extras_rich_links:
+        _deprecated("extras_rich_links", "Use extras_links.")
+    if extras_code_blocks:
+        _deprecated("extras_code_blocks", "The API ignores it.")
     contents = _contents_block(
         with_text=with_text, max_characters=max_characters,
         text_verbosity=text_verbosity,
         with_highlights=with_highlights, highlights_query=highlights_query,
         highlights_max=highlights_max_characters,
+        highlights_dynamic=highlights_dynamic, highlights_verbosity=highlights_verbosity,
         with_summary=with_summary, summary_query=summary_query,
         summary_schema=summary_schema,
         extras_links=extras_links, extras_image_links=extras_image_links,
         extras_rich_links=extras_rich_links, extras_rich_image_links=extras_rich_image_links,
         extras_code_blocks=extras_code_blocks,
-        max_age_hours=max_age_hours, subpages=subpages, subpage_target=subpage_target,
+        max_age_hours=max_age_hours, snapshot_as_of=snapshot_as_of,
+        subpages=subpages, subpage_target=subpage_target,
         include_sections=include_sections, exclude_sections=exclude_sections,
         include_html_tags=include_html_tags, livecrawl=livecrawl,
         livecrawl_timeout=livecrawl_timeout,
     )
     if contents:
         body["contents"] = contents
-    data = _request("POST", "/findSimilar", key, json_body=body, timeout=timeout)
-    results = [Result(r, i + 1) for i, r in enumerate(data.get("results", []))]
-    return SearchResults(query=f"similar-to:{url}", results=results,
-                         request_id=data.get("requestId"), cost_dollars=data.get("costDollars"),
-                         search_time_ms=data.get("searchTime"), raw=data)
+    data = _request(
+        "POST", "/findSimilar", key, json_body=body, timeout=timeout,
+        extra_headers=_dynamic_highlights_headers(contents),
+    )
+    return _search_results_from(f"similar-to:{url}", data)
 
 
 def similar_to(url, **kwargs) -> SearchResults:
@@ -2552,7 +2904,9 @@ def similar_to(url, **kwargs) -> SearchResults:
 # stream_answer() / stream_search() — OpenAI-style SSE streaming
 # ---------------------------------------------------------------------------
 def stream_answer(query, *, output_schema=None, text=False,
-                  citation_format=None, timeout=90.0, collect_meta=True):
+                  citation_format=None, system_prompt=None,
+                  user_location=None, user_identifier=None,
+                  timeout=90.0, collect_meta=True):
     """SSE-stream a citation-grounded answer incrementally (yields text deltas).
 
     Posts to ``/answer`` with ``stream=true`` and yields each incremental content
@@ -2583,6 +2937,14 @@ def stream_answer(query, *, output_schema=None, text=False,
         body["outputSchema"] = output_schema
     if citation_format:
         body["citationFormat"] = citation_format
+    if system_prompt:
+        body["systemPrompt"] = system_prompt
+    location = _normalize_user_location(user_location)
+    if location:
+        body["userLocation"] = location
+    identifier = _normalize_user_identifier(user_identifier)
+    if identifier:
+        body["userIdentifier"] = identifier
     parts: List[str] = []
     citations_out: List[dict] = []
     cost_dollars: Optional[dict] = None
@@ -2760,7 +3122,8 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
         Incremental content strings from ``text-delta`` events, followed by one
         final ``dict``:
             {"results": [...], "output": {...}, "grounding": [...],
-             "citations": [...], "text": "...", "request_id": "..."}
+             "citations": [...], "text": "...", "request_id": "...",
+             "warnings": [...], "notices": [...]}
         ``output`` is the structured synthesized answer, ``grounding`` the
         field-level citation clusters (may be ``None`` if the API omitted them),
         ``citations`` the URL-deduplicated source list, and ``text`` the joined
@@ -2782,12 +3145,22 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
     body["outputSchema"] = output_schema
     # whitelist of extra kwargs the search() body accepts (drop extras like timeout)
     for extra in ("include_domains", "exclude_domains", "start_published_date",
-                   "end_published_date", "use_autoprompt", "user_location"):
+                   "end_published_date", "use_autoprompt"):
         if kwargs.get(extra) is not None:
             key_camel = {"include_domains": "includeDomains", "exclude_domains": "excludeDomains",
                           "start_published_date": "startPublishedDate", "end_published_date": "endPublishedDate",
-                          "use_autoprompt": "autoprompt", "user_location": "userLocation"}[extra]
+                          "use_autoprompt": "autoprompt"}[extra]
             body[key_camel] = kwargs[extra]
+    location = _normalize_user_location(kwargs.get("user_location"))
+    if location:
+        body["userLocation"] = location
+    objective_text = _normalize_objective(kwargs.get("objective"))
+    if objective_text:
+        body["objective"] = objective_text
+    identifier = _normalize_user_identifier(kwargs.get("user_identifier"))
+    if identifier:
+        body["userIdentifier"] = identifier
+    _reject_lite(body)
     results_out = None
     output_out = None
     grounding_out = None      # per-field citation delta (type "grounding" event)
@@ -2795,8 +3168,11 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
     delta_citations: List[dict] = []  # citations riding along text-delta events
     request_id_meta = ""
     search_time_meta = None   # v0.11: searchTime carried by stream events (ms) when present
+    stream_headers = {"x-api-key": key, **(_dynamic_highlights_headers(body.get("contents")) or {})}
+    noticed: List[dict] = []
+    warned: List[dict] = []
     with httpx.stream("POST", f"{DEFAULT_API_URL}/search", json=body,
-                      headers={"x-api-key": key}, timeout=timeout) as resp:
+                      headers=stream_headers, timeout=timeout) as resp:
         if resp.status_code >= 400:
             try:
                 detail = resp.json()
@@ -2817,6 +3193,10 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
                 request_id_meta = obj.get("requestId") or ""
             if search_time_meta is None and obj.get("searchTime") is not None:
                 search_time_meta = obj.get("searchTime")
+            if obj.get("warnings") and not warned:
+                warned = _api_warnings(obj)
+            if obj.get("notices") and not noticed:
+                noticed = _api_notices(obj)
             etype = obj.get("type")
             if etype == "text-delta":
                 for c in (obj.get("choices") or []):
@@ -2851,6 +3231,8 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
         "text": "".join(delta_text),
         "request_id": request_id_meta,
         "search_time_ms": search_time_meta,
+        "warnings": warned,
+        "notices": noticed,
     }
 
 
@@ -2862,6 +3244,7 @@ def monitor_create(query, *, name=None, period="24h", num_results=5, output_sche
                    with_text=False, max_characters=None, text_verbosity=None,
                    with_highlights=False, highlights_query=None,
                    highlights_max_characters=None,
+                   highlights_dynamic=False, highlights_verbosity=None,
                    with_summary=False, summary_query=None, summary_schema=None,
                    extras_links=0, extras_image_links=0, extras_rich_links=0,
                    extras_rich_image_links=0, extras_code_blocks=0,
@@ -2894,25 +3277,27 @@ def monitor_create(query, *, name=None, period="24h", num_results=5, output_sche
     search_payload: dict[str, Any] = {"query": query}
     if num_results:
         search_payload["numResults"] = num_results
-    if with_text or with_highlights or with_summary:
-        search_payload["contents"] = _contents_block(
+    contents = None
+    if (with_text or with_highlights or with_summary or filter_empty_results
+            or highlights_dynamic or highlights_verbosity):
+        contents = _contents_block(
             with_text=with_text, max_characters=max_characters,
             text_verbosity=text_verbosity,
             with_highlights=with_highlights, highlights_query=highlights_query,
             highlights_max=highlights_max_characters,
+            highlights_dynamic=highlights_dynamic, highlights_verbosity=highlights_verbosity,
             with_summary=with_summary, summary_query=summary_query,
             summary_schema=summary_schema,
             extras_links=extras_links, extras_image_links=extras_image_links,
             extras_rich_links=extras_rich_links, extras_rich_image_links=extras_rich_image_links,
             extras_code_blocks=extras_code_blocks,
-            max_age_hours=max_age_hours,
+            max_age_hours=max_age_hours, filter_empty_results=filter_empty_results,
             subpages=subpages, subpage_target=subpage_target,
             livecrawl=livecrawl, livecrawl_timeout=livecrawl_timeout,
             include_sections=include_sections, exclude_sections=exclude_sections,
             include_html_tags=include_html_tags,
         )
-    if filter_empty_results:
-        search_payload["filterEmptyResults"] = True
+        search_payload["contents"] = contents
     if not webhook_url:
         raise ExaError(
             "monitor_create requires `webhook_url`: the API delivers each run's "
@@ -2932,7 +3317,10 @@ def monitor_create(query, *, name=None, period="24h", num_results=5, output_sche
         body["webhook"]["events"] = events
     if output_schema:
         body["outputSchema"] = output_schema
-    return _request("POST", "/monitors", key, json_body=body, timeout=timeout)
+    return _request(
+        "POST", "/monitors", key, json_body=body, timeout=timeout,
+        extra_headers=_dynamic_highlights_headers(contents),
+    )
 
 
 def monitor_list(*, status=None, name=None, metadata=None, limit=50, cursor=None):
@@ -5912,7 +6300,7 @@ def is_deprecated(pkg, *, days=180, timeout=90.0):
 
 __all__ = [
     "ExaError", "ExaAuthError", "ExaRateLimitError", "ExaBadRequestError",
-    "ExaPlanError", "ExaNotFoundError", "ExaServerError",
+    "ExaPlanError", "ExaNotFoundError", "ExaServerError", "ExaWarning",
     "Result", "SearchResults", "Answer", "AgentRun",
     "entity_summary", "entity_type", "entities",
     "entity_search", "entity_schema", "top_terms",
@@ -5952,6 +6340,7 @@ __all__ = [
     "pkg_releases", "deprecations", "snippet", "api_reference",
     "is_deprecated", "code_lint_tips",
     "VALID_CATEGORIES", "SEARCH_TYPES", "MODES", "DEFAULT_API_URL", "WEBSETS_API_URL",
+    "DYNAMIC_HIGHLIGHTS_BETA",
 ]
 
 

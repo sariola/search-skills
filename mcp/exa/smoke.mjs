@@ -65,6 +65,15 @@ if (tools.tools.length !== expected.length) {
 }
 console.log(`tool surface OK (${tools.tools.length} tools; ${expected.length} expected present)`);
 
+const searchTool = tools.tools.find((t) => t.name === "exa_search");
+const searchTypeDesc = searchTool?.inputSchema?.properties?.searchType?.description ?? "";
+const highlightProps = searchTool?.inputSchema?.properties ?? {};
+if (!searchTypeDesc.includes("lite") || !highlightProps.highlightsDynamic || !highlightProps.snapshotAsOf || !highlightProps.objective) {
+  console.error("\nexa_search schema is missing an Exa 3.0 field (lite, highlightsDynamic, snapshotAsOf, or objective)");
+  process.exit(1);
+}
+console.log("exa_search Exa 3.0 schema OK");
+
 // 2. resources
 const res = await client.listResources();
 console.log("resources:", res.resources.map((r) => r.uri));
@@ -76,7 +85,7 @@ console.log("templates:", rts.resourceTemplates.map((t) => t.uriTemplate));
 // 4. a live tool call
 const out = await client.callTool({
   name: "exa_search",
-  arguments: { query: "exa search api", numResults: 3 },
+  arguments: { query: "exa search api", numResults: 3, searchType: "lite", withHighlights: true },
 });
 const text = out.content?.[0]?.text ?? "";
 console.log("\n--- exa_search result (first 400 chars) ---");
