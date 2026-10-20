@@ -30,8 +30,23 @@
 // No credentials are ever printed.
 // ---------------------------------------------------------------------------
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Server, type Tool } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
+
+// Per tools/call: HTTP timeout and the MCP notifications/cancelled signal.
+// The rate limiter re-enters this store when the queued request actually runs.
+interface CallControl {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+const callControl = new AsyncLocalStorage<CallControl>();
+
+function throwIfCancelled(where: string): void {
+  if (callControl.getStore()?.signal?.aborted) {
+    throw new ExaApiError(`${where} cancelled.`, "cancelled", 499);
+  }
+}
 
 const API_BASE = "https://api.exa.ai";
 const WEBSETS_BASE = "https://api.exa.ai/websets";
@@ -59,6 +74,11 @@ const LITE_TOP_LEVEL = new Set([
   "startPublishedDate", "endPublishedDate", "moderation", "compliance",
 ]);
 const LITE_CONTENTS = new Set(["highlights", "text", "snapshotAsOf"]);
+// Parameters the dedicated lite tool refuses even if a caller passes them.
+const LITE_BANNED = [
+  "withSummary", "summaryQuery", "maxAgeHours", "outputSchema", "systemPrompt",
+  "additionalQueries", "searchType", "links", "imageLinks",
+];
 // company and people reject published-date filters. Only people also rejects
 // excludeDomains (the API returns 400).
 const DATE_REJECTING_CATEGORIES = new Set(["company", "people"]);
@@ -113,6 +133,7 @@ class RateLimiter {
 
   async enqueue<T>(fn: () => Promise<T>, operation?: string): Promise<T> {
     const queuePosition = this.queue.length;
+    const store = callControl.getStore();
     // stdout is the JSON-RPC framing channel for a stdio MCP server — log to
     // stderr (console.error) or the line reader chokes on every API call.
     console.error(`[Exa API] Enqueueing request${operation ? ` for ${operation}` : ""} (queue: ${queuePosition})`);
@@ -120,8 +141,9 @@ class RateLimiter {
       this.queue.push(async () => {
         this.lifetimeRequests++; // count every attempt, success or failure
         const startedAt = Date.now(); // flight start — excludes queue wait
+        const run = () => fn();
         try {
-          const result = await fn();
+          const result = store ? await callControl.run(store, run) : await run();
           resolve(result);
         } catch (error) {
           console.error(`[Exa API] Error in request${operation ? ` for ${operation}` : ""}: `, error);
@@ -209,17 +231,42 @@ class ExaClient {
     opts: { json?: any; base?: string; timeoutMs?: number; idempotent?: boolean; extraHeaders?: Record<string, string> } = {},
   ): Promise<any> {
     const { json, base = API_BASE, timeoutMs = 45000, idempotent = method.toUpperCase() === "GET", extraHeaders } = opts;
+    const control = callControl.getStore();
+    const limitMs = control?.timeoutMs ?? timeoutMs;
+    const signals: AbortSignal[] = [];
+    if (limitMs > 0) signals.push(AbortSignal.timeout(limitMs));
+    if (control?.signal) signals.push(control.signal);
+    const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
     const url = `${base}${path}`;
-    const resp = await fetch(url, {
-      method,
-      headers: {
-        "x-api-key": this.apiKey,
-        "Content-Type": "application/json",
-        ...(extraHeaders ?? {}),
-      },
-      body: json === undefined ? undefined : JSON.stringify(json),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method,
+        headers: {
+          "x-api-key": this.apiKey,
+          "Content-Type": "application/json",
+          ...(extraHeaders ?? {}),
+        },
+        body: json === undefined ? undefined : JSON.stringify(json),
+        signal,
+      });
+    } catch (error) {
+      if (control?.signal?.aborted) {
+        throw new ExaApiError("Exa request cancelled.", "cancelled", 499);
+      }
+      const name = error instanceof Error ? error.name : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new ExaApiError(
+          `Exa request to ${path} timed out after ${limitMs}ms.`,
+          "timeout",
+          408,
+        );
+      }
+      throw new ExaApiError(
+        `Exa request to ${path} failed at the transport level (${error instanceof Error ? error.message : error}).`,
+        "http",
+      );
+    }
     let data: any = undefined;
     const text = await resp.text();
     if (text) {
@@ -391,7 +438,10 @@ class ExaClient {
     if (args.effort) body.effort = args.effort;
     if (args.systemPrompt) body.systemPrompt = args.systemPrompt;
     if (args.outputSchema) body.outputSchema = args.outputSchema;
-    if (args.maxCostDollars) body.budget = { maxCostDollars: args.maxCostDollars };
+    const budget: Record<string, number> = {};
+    if (args.maxCostDollars !== undefined) budget.maxCostDollars = args.maxCostDollars;
+    if (args.maxDurationSeconds !== undefined) budget.maxDurationSeconds = args.maxDurationSeconds;
+    if (Object.keys(budget).length) body.budget = budget;
     if (args.previousRunId) body.previousRunId = args.previousRunId;
     if (args.metadata) body.metadata = args.metadata;
     if (args.userIdentifier) body.userIdentifier = args.userIdentifier;
@@ -410,6 +460,7 @@ class ExaClient {
     // Terminal statuses: completed | failed | cancelled.
     // In-flight statuses: queued | running.
     while (Date.now() < deadline) {
+      throwIfCancelled(`Exa agent run ${runId}`);
       last = await this.rateLimiter.enqueue(
         () => this.get(`/agent/runs/${runId}`, API_BASE, 45000), "exa_agent:poll");
       if (["completed", "failed", "cancelled"].includes(last?.status)) break;
@@ -525,7 +576,25 @@ class ExaClient {
   // header) and parse the JSONL, keyed by customId. Done server-side because a
   // model cannot reliably fetch a presigned URL inside a tool call.
   async batchDownloadResults(resultsUrl: string): Promise<{ results: Record<string, any>; lines: any[] }> {
-    const resp = await fetch(resultsUrl, { redirect: "follow", signal: AbortSignal.timeout(60000) });
+    const control = callControl.getStore();
+    const signals: AbortSignal[] = [AbortSignal.timeout(control?.timeoutMs ?? 60000)];
+    if (control?.signal) signals.push(control.signal);
+    const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+    let resp: Response;
+    try {
+      resp = await fetch(resultsUrl, { redirect: "follow", signal });
+    } catch (error) {
+      if (control?.signal?.aborted) {
+        throw new ExaApiError("Batch results download cancelled.", "cancelled", 499);
+      }
+      const name = error instanceof Error ? error.name : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new ExaApiError("Batch results download timed out.", "timeout", 408);
+      }
+      throw new ExaApiError(
+        `Batch results download failed (${error instanceof Error ? error.message : String(error)}).`,
+        "http");
+    }
     if (!resp.ok) {
       throw new ExaApiError(`Batch results download failed (HTTP ${resp.status}).`, "server", resp.status);
     }
@@ -550,6 +619,7 @@ class ExaClient {
     const deadline = Date.now() + timeoutSec * 1000;
     let snap: any = await this.batchGet(batchId);
     while (Date.now() < deadline && (snap?.status ?? "") === "in_progress") {
+      throwIfCancelled(`Batch ${batchId}`);
       await new Promise((r) => setTimeout(r, 3000));
       snap = await this.batchGet(batchId);
     }
@@ -624,6 +694,7 @@ class ExaClient {
     const deadline = Date.now() + timeoutSec * 1000;
     let ws: any = { id };
     while (Date.now() < deadline) {
+      throwIfCancelled(`Webset ${id}`);
       ws = await this.websetGetRaw(id);
       const searches: any[] = ws?.searches ?? [];
       const terminal = (ws?.status ?? "") === "paused" || (ws?.status ?? "") === "cancelled"
@@ -652,6 +723,7 @@ class ExaClient {
     if (args.wait) {
       const deadline = Date.now() + (args.timeoutSec ?? 60) * 1000;
       while (Date.now() < deadline) {
+        throwIfCancelled(`Webset ${id}`);
         ws = await this.websetGetRaw(id);
         const searches: any[] = ws?.searches ?? [];
         if ((ws?.status ?? "") === "paused" || (ws?.status ?? "") === "cancelled"
@@ -1186,6 +1258,7 @@ interface ExaAgentArgs {
   systemPrompt?: string;
   outputSchema?: object;
   maxCostDollars?: number;
+  maxDurationSeconds?: number;
   timeout?: number;
   previousRunId?: string;
   metadata?: Record<string, string>;
@@ -1510,8 +1583,17 @@ const exaAgentTool: Tool = {
       },
       maxCostDollars: {
         type: "number",
+        minimum: 1,
+        maximum: 100,
         description:
-          "Per-run spending cap in USD, 1-100. (default: $5 cap on auto effort)",
+          "Per-run spending cap in USD, 1-100. Applies only to effort auto and ultra. (default: $5 on auto, $20 on ultra)",
+      },
+      maxDurationSeconds: {
+        type: "integer",
+        minimum: 300,
+        maximum: 10800,
+        description:
+          "Soft wall-clock cap in seconds, 300-10800 (5 minutes to 3 hours). Applies only to effort ultra. The run stops new work and returns what it has, stopReason time_limit_reached.",
       },
       timeout: {
         type: "number",
@@ -1609,6 +1691,61 @@ const exaFindSimilarTool: Tool = {
       maxAgeHours: { type: "number", description: "Max cached-content age in hours, -1..720" },
     },
     required: ["url"],
+  },
+};
+
+const searchSchemaProps = (): NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> =>
+  (exaSearchTool.inputSchema as { properties: NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> }).properties;
+const LITE_SCHEMA_KEYS = [
+  "query", "numResults", "category", "objective", "userIdentifier", "userLocation",
+  "moderation", "compliance", "includeDomains", "excludeDomains",
+  "startPublishedDate", "endPublishedDate",
+  "withHighlights", "highlightsQuery", "highlightsMaxCharacters", "highlightsDynamic",
+  "highlightsVerbosity", "withText", "textMaxCharacters", "textVerbosity", "snapshotAsOf",
+];
+
+const exaSearchLiteTool: Tool = {
+  name: "exa_search_lite",
+  description:
+    "Cached search via /search with type lite ($4/1k). Only lite-compatible " +
+    "parameters are accepted. Freshness, summary, synthesis, and extra queries " +
+    "are rejected; use exa_search for those.",
+  inputSchema: {
+    type: "object",
+    properties: Object.fromEntries(LITE_SCHEMA_KEYS.map((k) => [k, searchSchemaProps()[k]])) as NonNullable<Tool["inputSchema"]>["properties"],
+    required: ["query"],
+  },
+};
+
+const exaSearchNearTool: Tool = {
+  name: "exa_search_near",
+  description:
+    "Location-aware /search. userLocation is required: a 2-letter ISO country " +
+    "code, or {country?, latitude, longitude}. Same levers as exa_search.",
+  inputSchema: {
+    type: "object",
+    properties: { ...searchSchemaProps() } as NonNullable<Tool["inputSchema"]>["properties"],
+    required: ["query", "userLocation"],
+  },
+};
+
+const fetchSchemaProps = (): NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> =>
+  (exaFetchTool.inputSchema as { properties: NonNullable<NonNullable<Tool["inputSchema"]>["properties"]> }).properties;
+const SNAPSHOT_SCHEMA_KEYS = [
+  "urls", "ids", "snapshotAsOf", "withText", "textVerbosity", "textMaxCharacters",
+  "withHighlights", "highlightsQuery", "highlightsMaxCharacters", "highlightsDynamic",
+  "highlightsVerbosity", "userIdentifier",
+];
+
+const exaFetchSnapshotTool: Tool = {
+  name: "exa_fetch_snapshot",
+  description:
+    "Fetches the stored page via /contents as of snapshotAsOf (ISO date or " +
+    "date-time). Never live-fetches. Provide urls or ids.",
+  inputSchema: {
+    type: "object",
+    properties: Object.fromEntries(SNAPSHOT_SCHEMA_KEYS.map((k) => [k, fetchSchemaProps()[k]])) as NonNullable<Tool["inputSchema"]>["properties"],
+    required: ["snapshotAsOf"],
   },
 };
 
@@ -2772,7 +2909,12 @@ Best practices:
   rejects excludeDomains. company may use excludeDomains.
 - searchType: lite for cheap cached search, auto for everyday, deep for synthesis.
   instant/fast/deep-reasoning are legacy. Pass notices to the user; warnings are
-  request diagnostics.
+  request diagnostics. exa_search_lite exposes only lite parameters;
+  exa_fetch_snapshot pins snapshotAsOf; exa_search_near requires userLocation
+  (country code or lat/long).
+- exa_agent budget: maxCostDollars (1-100) on auto and ultra; maxDurationSeconds
+  (300-10800) on ultra only. Every tool accepts requestTimeout (seconds). A
+  cancelled MCP request aborts the in-flight fetch.
 - highlightsDynamic shares one context budget across results (beta header is
   sent automatically). snapshotAsOf pins a stored page.
 - Request only what you use — withText / withHighlights / withSummary each add
@@ -3014,6 +3156,44 @@ function pickEnum(args: any, key: string, allowed: readonly string[], tool: stri
   return v;
 }
 
+function pickRequestTimeoutMs(args: any, tool: string): number | undefined {
+  const v = args?.requestTimeout;
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0.05 || v > 600) {
+    throw new ExaApiError(
+      `Tool ${tool}: 'requestTimeout' must be seconds between 0.05 and 600 (got ${v})`, "bad_request");
+  }
+  return Math.round(v * 1000);
+}
+
+function rejectBanned(args: any, keys: readonly string[], tool: string, why: string): void {
+  const hit = keys.filter((k) => args?.[k] !== undefined && args?.[k] !== null && args?.[k] !== "");
+  if (hit.length) {
+    throw new ExaApiError(`${tool} rejects ${hit.join(", ")}. ${why}`, "bad_request");
+  }
+}
+
+const REQUEST_TIMEOUT_PROPERTY = {
+  type: "number" as const,
+  minimum: 0.05,
+  maximum: 600,
+  description:
+    "Per-call HTTP timeout in seconds (default: the endpoint's own). A cancelled MCP request aborts the in-flight fetch.",
+};
+
+function expose(tool: Tool): Tool {
+  const schema = tool.inputSchema;
+  if (!schema || schema.type !== "object") return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      type: "object",
+      properties: { ...(schema.properties ?? {}), requestTimeout: REQUEST_TIMEOUT_PROPERTY },
+    },
+  };
+}
+
 function pickIntInRange(args: any, key: string, min: number, max: number, tool: string): number | undefined {
   const v = pick(args, key, "number");
   if (v === undefined) return undefined;
@@ -3183,6 +3363,80 @@ function toolResult(text: string, bag: Record<string, unknown>, isError = false)
   };
 }
 
+function collectSearchArgs(args: any, tool: string, forcedType?: string): ExaSearchArgs {
+  const queries = pick(args, "additionalQueries", "array") as string[] | undefined;
+  if (queries && (queries.length < 1 || queries.length > 10)) {
+    throw new ExaApiError(`${tool}: additionalQueries must contain 1 to 10 strings`, "bad_request");
+  }
+  const compliance = pick(args, "compliance", "string");
+  if (compliance && compliance !== "hipaa") {
+    throw new ExaApiError(`${tool}: compliance must be 'hipaa'`, "bad_request");
+  }
+  const a: ExaSearchArgs = {
+    query: requiredStr(args, "query", tool),
+    numResults: pickIntInRange(args, "numResults", 1, 100, tool),
+    category: pick(args, "category", "string"),
+    searchType: forcedType ?? pickSearchType(args, tool),
+    startPublishedDate: pick(args, "startPublishedDate", "string"),
+    endPublishedDate: pick(args, "endPublishedDate", "string"),
+    includeDomains: pick(args, "includeDomains", "array"),
+    excludeDomains: pick(args, "excludeDomains", "array"),
+    userLocation: pickUserLocation(args, tool),
+    objective: pickObjective(args, tool),
+    userIdentifier: pickUserIdentifier(args, tool),
+    systemPrompt: pick(args, "systemPrompt", "string"),
+    additionalQueries: queries,
+    moderation: pick(args, "moderation", "boolean"),
+    compliance,
+    withHighlights: pick(args, "withHighlights", "boolean"),
+    highlightsQuery: pick(args, "highlightsQuery", "string"),
+    highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, tool),
+    highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
+    highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, tool),
+    withText: pick(args, "withText", "boolean"),
+    textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, tool),
+    textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, tool),
+    withSummary: pick(args, "withSummary", "boolean"),
+    summaryQuery: pick(args, "summaryQuery", "string"),
+    links: pickIntInRange(args, "links", 0, 1000, tool),
+    imageLinks: pickIntInRange(args, "imageLinks", 0, 1000, tool),
+    maxAgeHours: pickIntInRange(args, "maxAgeHours", -1, 720, tool),
+    snapshotAsOf: pickSnapshotAsOf(args, tool),
+    outputSchema: pick(args, "outputSchema", "object"),
+  };
+  checkEntityCategoryCompatibility(a.category, a.startPublishedDate, a.endPublishedDate, a.excludeDomains, tool);
+  return a;
+}
+
+function searchToolResult(data: any, meta: ApiMetricsMeta) {
+  logWarnings(data);
+  const results: any[] = data?.results ?? [];
+  const lines = results.map((r, i) => {
+    const bits = [`${i + 1}. ${r.title || "(untitled)"}`, `   ${r.url || ""}`];
+    if (r.publishedDate) bits.push(`   published: ${r.publishedDate}`);
+    const s = summaryText(r.summary);
+    if (s) bits.push(`   ${s.slice(0, 240)}`);
+    const h = firstHighlight(r);
+    if (h && s !== h) bits.push(`   ${h.slice(0, 200)}`);
+    return bits.join("\n");
+  });
+  let answer = "";
+  if (data?.output?.content) {
+    answer = `\n\n--- synthesized answer ---\n${typeof data.output.content === "string"
+      ? data.output.content : JSON.stringify(data.output.content)}`;
+  }
+  return toolResult(
+    `Found ${results.length} result(s):\n${lines.join("\n")}${answer}${renderNotices(data)}`,
+    {
+      ...meta,
+      raw: data,
+      costDollars: data?.costDollars,
+      warnings: data?.warnings ?? [],
+      notices: data?.notices ?? [],
+    },
+  );
+}
+
 function buildServer(apiKey: string): Server {
   const client = new ExaClient(apiKey);
 
@@ -3210,7 +3464,8 @@ function buildServer(apiKey: string): Server {
   };
 
   // Read resources
-  server.setRequestHandler("resources/read", async (request) => {
+  server.setRequestHandler("resources/read", async (request, ctx) => {
+    return callControl.run({ signal: ctx.mcpReq.signal }, async () => {
     const uri = request.params.uri;
     if (uri === "exa-team:") {
       const team = await client.team();
@@ -3236,6 +3491,7 @@ function buildServer(apiKey: string): Server {
       };
     }
     throw new Error(`Unsupported resource URI: ${uri}`);
+    });
   });
 
   server.setRequestHandler("resources/list", async () => ({
@@ -3250,7 +3506,8 @@ function buildServer(apiKey: string): Server {
 
   server.setRequestHandler("tools/list", async () => ({
     tools: [
-      exaSearchTool, exaFetchTool, exaAnswerTool, exaAgentTool, exaFindSimilarTool,
+      exaSearchTool, exaSearchLiteTool, exaSearchNearTool, exaFetchTool, exaFetchSnapshotTool,
+      exaAnswerTool, exaAgentTool, exaFindSimilarTool,
       exaAgentGetTool, exaAgentListTool, exaAgentCancelTool, exaAgentStopTool, exaAgentEventsTool,
       exaAgentDeleteTool,
       exaBatchCreateTool, exaBatchGetTool, exaBatchListTool, exaBatchCancelTool, exaBatchDeleteTool,
@@ -3271,7 +3528,7 @@ function buildServer(apiKey: string): Server {
       exaWebhookCreateTool, exaWebhookListTool, exaWebhookGetTool, exaWebhookUpdateTool,
       exaWebhookDeleteTool, exaWebhookAttemptsTool,
       exaEventListTool, exaEventGetTool,
-    ],
+    ].map(expose),
   }));
 
   server.setRequestHandler("prompts/list", async () => ({
@@ -3291,80 +3548,32 @@ function buildServer(apiKey: string): Server {
     throw new Error(`Prompt not found: ${request.params.name}`);
   });
 
-  server.setRequestHandler("tools/call", async (request) => {
+  server.setRequestHandler("tools/call", async (request, ctx) => {
     const { name, arguments: args = {} } = request.params;
     const meta = metricsMeta();
     try {
+      if (ctx.mcpReq.signal.aborted) {
+        throw new ExaApiError("Exa request cancelled.", "cancelled", 499);
+      }
+      const timeoutMs = pickRequestTimeoutMs(args, name);
+      return await callControl.run({ signal: ctx.mcpReq.signal, timeoutMs }, async () => {
       switch (name) {
         case "exa_search": {
-          const queries = pick(args, "additionalQueries", "array") as string[] | undefined;
-          if (queries && (queries.length < 1 || queries.length > 10)) {
-            throw new ExaApiError("exa_search: additionalQueries must contain 1 to 10 strings", "bad_request");
+          return searchToolResult(await client.search(collectSearchArgs(args, "exa_search")), meta);
+        }
+        case "exa_search_lite": {
+          rejectBanned(args, LITE_BANNED, "exa_search_lite",
+            "Use exa_search for freshness, summaries, synthesis, or another search type.");
+          return searchToolResult(await client.search(collectSearchArgs(args, "exa_search_lite", "lite")), meta);
+        }
+        case "exa_search_near": {
+          const near = collectSearchArgs(args, "exa_search_near");
+          if (!near.userLocation) {
+            throw new ExaApiError(
+              "exa_search_near requires userLocation (a 2-letter country code or {country?, latitude, longitude}).",
+              "bad_request");
           }
-          const compliance = pick(args, "compliance", "string");
-          if (compliance && compliance !== "hipaa") {
-            throw new ExaApiError("exa_search: compliance must be 'hipaa'", "bad_request");
-          }
-          const a: ExaSearchArgs = {
-            query: requiredStr(args, "query", "exa_search"),
-            numResults: pickIntInRange(args, "numResults", 1, 100, "exa_search"),
-            category: pick(args, "category", "string"),
-            searchType: pickSearchType(args, "exa_search"),
-            startPublishedDate: pick(args, "startPublishedDate", "string"),
-            endPublishedDate: pick(args, "endPublishedDate", "string"),
-            includeDomains: pick(args, "includeDomains", "array"),
-            excludeDomains: pick(args, "excludeDomains", "array"),
-            userLocation: pickUserLocation(args, "exa_search"),
-            objective: pickObjective(args, "exa_search"),
-            userIdentifier: pickUserIdentifier(args, "exa_search"),
-            systemPrompt: pick(args, "systemPrompt", "string"),
-            additionalQueries: queries,
-            moderation: pick(args, "moderation", "boolean"),
-            compliance,
-            withHighlights: pick(args, "withHighlights", "boolean"),
-            highlightsQuery: pick(args, "highlightsQuery", "string"),
-            highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, "exa_search"),
-            highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
-            highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, "exa_search"),
-            withText: pick(args, "withText", "boolean"),
-            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, "exa_search"),
-            textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, "exa_search"),
-            withSummary: pick(args, "withSummary", "boolean"),
-            summaryQuery: pick(args, "summaryQuery", "string"),
-            links: pickIntInRange(args, "links", 0, 1000, "exa_search"),
-            imageLinks: pickIntInRange(args, "imageLinks", 0, 1000, "exa_search"),
-            maxAgeHours: pickIntInRange(args, "maxAgeHours", -1, 720, "exa_search"),
-            snapshotAsOf: pickSnapshotAsOf(args, "exa_search"),
-            outputSchema: pick(args, "outputSchema", "object"),
-          };
-          checkEntityCategoryCompatibility(a.category, a.startPublishedDate, a.endPublishedDate, a.excludeDomains, "exa_search");
-          const data = await client.search(a);
-          logWarnings(data);
-          const results: any[] = data?.results ?? [];
-          const lines = results.map((r, i) => {
-            const bits = [`${i + 1}. ${r.title || "(untitled)"}`, `   ${r.url || ""}`];
-            if (r.publishedDate) bits.push(`   published: ${r.publishedDate}`);
-            const s = summaryText(r.summary);
-            if (s) bits.push(`   ${s.slice(0, 240)}`);
-            const h = firstHighlight(r);
-            if (h && s !== h) bits.push(`   ${h.slice(0, 200)}`);
-            return bits.join("\n");
-          });
-          let answer = "";
-          if (data?.output?.content) {
-            answer = `\n\n--- synthesized answer ---\n${typeof data.output.content === "string"
-              ? data.output.content : JSON.stringify(data.output.content)}`;
-          }
-          return toolResult(
-            `Found ${results.length} result(s):\n${lines.join("\n")}${answer}${renderNotices(data)}`,
-            {
-              ...meta,
-              raw: data,
-              costDollars: data?.costDollars,
-              warnings: data?.warnings ?? [],
-              notices: data?.notices ?? [],
-            },
-          );
+          return searchToolResult(await client.search(near), meta);
         }
         case "exa_fetch": {
           const a: ExaFetchArgs = {
@@ -3397,6 +3606,37 @@ function buildServer(apiKey: string): Server {
             { ...meta, raw: data, costDollars: data?.costDollars },
           );
         }
+        case "exa_fetch_snapshot": {
+          rejectBanned(args, ["maxAgeHours", "subpages", "subpageTarget"], "exa_fetch_snapshot",
+            "A snapshot never live-fetches.");
+          const snapshotAsOf = pickSnapshotAsOf(args, "exa_fetch_snapshot");
+          if (!snapshotAsOf) {
+            throw new ExaApiError(
+              "exa_fetch_snapshot requires snapshotAsOf (YYYY-MM-DD or an ISO date-time).", "bad_request");
+          }
+          const snap: ExaFetchArgs = {
+            urls: pick(args, "urls", "array"),
+            ids: pick(args, "ids", "array"),
+            withText: pick(args, "withText", "boolean"),
+            textVerbosity: pickEnum(args, "textVerbosity", TEXT_VERBOSITIES, "exa_fetch_snapshot"),
+            textMaxCharacters: pickIntInRange(args, "textMaxCharacters", 1, 1000000, "exa_fetch_snapshot"),
+            withHighlights: pick(args, "withHighlights", "boolean"),
+            highlightsQuery: pick(args, "highlightsQuery", "string"),
+            highlightsMaxCharacters: pickIntInRange(args, "highlightsMaxCharacters", 1, 1000000, "exa_fetch_snapshot"),
+            highlightsDynamic: pick(args, "highlightsDynamic", "boolean"),
+            highlightsVerbosity: pickEnum(args, "highlightsVerbosity", HIGHLIGHT_VERBOSITIES, "exa_fetch_snapshot"),
+            snapshotAsOf,
+            userIdentifier: pickUserIdentifier(args, "exa_fetch_snapshot"),
+          };
+          if (!snap.urls && !snap.ids) {
+            throw new ExaApiError("exa_fetch_snapshot needs either urls or ids", "bad_request");
+          }
+          const snapData = await client.fetch(snap);
+          return toolResult(
+            renderContents(snapData),
+            { ...meta, raw: snapData, costDollars: snapData?.costDollars },
+          );
+        }
         case "exa_answer": {
           const a: ExaAnswerArgs = {
             query: requiredStr(args, "query", "exa_answer"),
@@ -3415,12 +3655,23 @@ function buildServer(apiKey: string): Server {
           );
         }
         case "exa_agent": {
+          const effort = pickEnum(args, "effort", AGENT_EFFORTS, "exa_agent");
+          const maxCostDollars = pickIntInRange(args, "maxCostDollars", 1, 100, "exa_agent");
+          const maxDurationSeconds = pickIntInRange(args, "maxDurationSeconds", 300, 10800, "exa_agent");
+          const resolvedEffort = effort ?? "auto";
+          if (maxDurationSeconds !== undefined && resolvedEffort !== "ultra") {
+            throw new ExaApiError("exa_agent: maxDurationSeconds applies only to effort ultra.", "bad_request");
+          }
+          if (maxCostDollars !== undefined && resolvedEffort !== "auto" && resolvedEffort !== "ultra") {
+            throw new ExaApiError("exa_agent: maxCostDollars applies only to effort auto and ultra.", "bad_request");
+          }
           const a: ExaAgentArgs = {
             query: requiredStr(args, "query", "exa_agent"),
-            effort: pickEnum(args, "effort", AGENT_EFFORTS, "exa_agent"),
+            effort,
             systemPrompt: pick(args, "systemPrompt", "string"),
             outputSchema: pick(args, "outputSchema", "object"),
-            maxCostDollars: pickIntInRange(args, "maxCostDollars", 1, 100, "exa_agent"),
+            maxCostDollars,
+            maxDurationSeconds,
             timeout: pick(args, "timeout", "number"),
             previousRunId: pick(args, "previousRunId", "string"),
             metadata: pick(args, "metadata", "object"),
@@ -4206,6 +4457,7 @@ function buildServer(apiKey: string): Server {
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
+      });
     } catch (error) {
       const message = error instanceof ExaApiError
         ? error.message

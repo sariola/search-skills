@@ -62,7 +62,10 @@ requests; `num_results` is per query, not a total budget.
    create persistent Websets. For mode constraints, read [usage.md](references/usage.md).
 3. Request highlights to triage, then fetch the strongest primary sources.
    `highlights_dynamic=True` shares one excerpt budget across the set.
-   `snapshot_as_of` reads a stored page. Show `results.notices` with the hits;
+   `snapshot_as_of` reads a stored page. `search_lite`, `search_near`, and
+   `fetch_snapshot` are the same calls with the type, location, or snapshot
+   fixed. `RequestTimeout` and `CancelToken` / `RequestScope` bound or abort a
+   call (`ExaTimeoutError.phase`, `ExaCancelledError`). Show `results.notices` with the hits;
    `results.warnings` are diagnostics. Inspect per-URL errors and truncation.
    An empty excerpt is not proof that the page lacks the answer. A generated
    summary is not a quotation.

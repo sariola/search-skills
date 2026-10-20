@@ -92,9 +92,23 @@ the right granular choice.
    - Required: `query` (top-level, per `CreateAgentRunRequest`); optional
      `effort` (`minimal`/`low`/`medium`/`high`/`xhigh`/`ultra`/`max`/`auto`),
      `userIdentifier`,
-     `systemPrompt`, `outputSchema`, `maxCostDollars` (1–100, default $5 cap on
-     `auto`), `timeout` (default 120s). Requires a plan that enables
-     `/agent/runs`.
+     `systemPrompt`, `outputSchema`, `maxCostDollars` (1–100, `auto` and `ultra`
+     only; default $5 on `auto`, $20 on `ultra`), `maxDurationSeconds`
+     (300–10800, `ultra` only), `timeout` (poll budget, default 120s). Requires
+     a plan that enables `/agent/runs`.
+
+6. **`exa_search_lite`** — cached `/search` with `type=lite`. Only lite-compatible
+   parameters are exposed (query, objective, location, domains, dates, highlights,
+   text, `snapshotAsOf`). Freshness, summary, and synthesis are rejected.
+
+7. **`exa_fetch_snapshot`** — stored `/contents` page. Required: `snapshotAsOf`
+   (YYYY-MM-DD or ISO date-time) plus `urls` or `ids`. Never live-fetches.
+
+8. **`exa_search_near`** — `/search` with required `userLocation` (2-letter
+   country code, or `{country?, latitude, longitude}`). Same levers as `exa_search`.
+
+Every tool accepts `requestTimeout` (seconds, 0.05–600). A cancelled MCP
+request (`notifications/cancelled`) aborts the in-flight fetch.
 
 5. **`exa_find_similar`** — more-like-this (`POST /findSimilar`)
    - Required: `url`; optional `numResults` (1–100), `category`,
@@ -151,7 +165,7 @@ bun probe.mjs        # deeper: date-range search, category, contents extras,
 - Errors are returned as JSON `{ error, category }` with `isError: true`.
   The same bag (`error`, `category`, `apiMetrics`) is on `structuredContent`
   and `content[0]._meta` (`auth`, `plan`, `not_found`, `rate_limit`,
-  `bad_request`, `server`, `http`) so callers can
+  `bad_request`, `timeout`, `cancelled`, `server`, `http`) so callers can
   distinguish a bad key from a plan-gated endpoint.
 - Client-side validation: `effort`, `textVerbosity`, and `highlightsVerbosity`,
   plus range args (`numResults`, character caps 1–1000000, `links`, `subpages`,

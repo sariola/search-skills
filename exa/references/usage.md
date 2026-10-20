@@ -42,7 +42,7 @@ results above 10 ([changelog](https://exa.ai/docs/changelog)). `auto` is $7 per
 `user_identifier`, `category`, `num_results`, highlights, text, `snapshot_as_of`,
 `user_location`, domain filters, published dates, `moderation`, and `compliance`
 ([OpenAPI](https://exa.ai/docs/exa-spec.yaml)). Freshness, summary, synthesis,
-and extra queries raise `ExaBadRequestError` locally.
+and extra queries raise `ExaBadRequestError` locally. `search_lite(query, ...)` forces `lite` and rejects any other `search_type`. `search_near(query, user_location, ...)` requires a country code or `{latitude, longitude}`. `fetch_snapshot(urls, snapshot_as_of=...)` reads the stored page and never live-fetches.
 
 - `objective`: ranking goal, max 4096 characters.
 - `user_location`: a 2-letter ISO country code, or `{country?, latitude, longitude}`. Latitude and longitude go together; coordinates do not set a country.
@@ -51,6 +51,10 @@ and extra queries raise `ExaBadRequestError` locally.
 - `moderation=True` filters unsafe content. `compliance="hipaa"` requests cache-only retrieval.
 
 Deprecated kwargs still send and raise `DeprecationWarning`: `start_crawl_date` / `end_crawl_date` (ignored), `text_include` / `text_exclude` (wire fields `includeText` / `excludeText`), `livecrawl` (use `max_age_hours`), `context`, search `subpages` / `subpage_target` (still valid on `fetch`), `extras_rich_links`, and `extras_code_blocks`. `use_autoprompt=True` sends autoprompt; `False` omits the field.
+
+## Timeouts and cancellation
+
+`timeout` on a call is seconds (a number stays a number). `RequestTimeout(total, connect=, read=, write=, pool=)` or a dict with those keys sets httpx phases. A timeout raises `ExaTimeoutError` (`phase` is `connect`, `read`, `write`, `pool`, or `total`). `CancelToken` aborts one call: `token.cancel(reason)` closes that call's private client and raises `ExaCancelledError`. `with RequestScope(cancel=token):` covers every request in the block. An explicit `cancel=` wins over the scope. Uncancelled calls keep the shared client.
 
 ## Content retrieval
 

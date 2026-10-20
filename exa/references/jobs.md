@@ -6,7 +6,10 @@ Use `agent()` when the task needs a hosted multi-step synthesis. It creates a
 remote run and can cost more than search. `effort` is `minimal`, `low`,
 `medium`, `high`, `xhigh`, `ultra` (highest OpenAPI tier), or `auto` (default);
 set it proportionally to the question. `max` remains accepted because graceful
-stop applies only to `effort=max`. `user_identifier` is an opaque 1–64 character
+stop applies only to `effort=max`. `max_cost_dollars` (1–100) caps spend on
+`auto` and `ultra` (omitted defaults are $5 and $20). `max_duration_seconds`
+(integer 300–10800) caps wall-clock time on `ultra` only; the run stops new
+work and returns `stopReason` `time_limit_reached`. `user_identifier` is an opaque 1–64 character
 id and does not change the run. `agent_chat(turns=N)` creates a run per turn,
 not a local chat loop.
 

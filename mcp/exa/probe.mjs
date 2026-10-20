@@ -103,6 +103,11 @@ ok = (await call("exa_search", { query: "x", searchType: "lite", withSummary: tr
 ok = (await call("exa_search", { query: "x", userLocation: { latitude: 91, longitude: 0 } }, "search(bad latitude → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
 // Negative: date filter on entity category should be rejected client-side.
 ok = (await call("exa_search", { query: "x", category: "company", startPublishedDate: "2024-01-01T00:00:00Z" }, "search(company + date → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_search_lite", { query: "x", withSummary: true }, "search_lite(summary → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_fetch_snapshot", { urls: ["https://example.com"] }, "fetch_snapshot(no date → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_search_near", { query: "x" }, "search_near(no location → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_agent", { query: "x", maxDurationSeconds: 300 }, "agent(duration without ultra → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
+ok = (await call("exa_search", { query: "x", requestTimeout: 0 }, "search(requestTimeout 0 → expect bad_request)", { expectError: true, expectCategory: ["bad_request"] })).passed && ok;
 
 // ---- Agent: top-level body, then chain / stop / events / list ---------------
 // A cheap low-effort run. If it completes (or even plan-gates) we get a run id

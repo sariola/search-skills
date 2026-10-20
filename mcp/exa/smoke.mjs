@@ -24,11 +24,12 @@ console.log("connected");
 const tools = await client.listTools();
 console.log("tools:", tools.tools.map((t) => t.name));
 
-// Assert the full research surface is present (63 tools): 5 core + 6 agent-mgmt
+// Assert the full research surface is present (66 tools): 8 core + 6 agent-mgmt
 // + 5 batch + 9 search-monitors + 7 webset-monitors + 14 webset + 4 enrichment
 // + 5 import + 6 webhook + 2 event.
 const expected = [
-  "exa_search", "exa_fetch", "exa_answer", "exa_agent", "exa_find_similar",
+  "exa_search", "exa_search_lite", "exa_search_near", "exa_fetch", "exa_fetch_snapshot",
+  "exa_answer", "exa_agent", "exa_find_similar",
   "exa_agent_get", "exa_agent_list", "exa_agent_cancel", "exa_agent_stop",
   "exa_agent_events", "exa_agent_delete",
   "exa_batch_create", "exa_batch_get", "exa_batch_list", "exa_batch_cancel",
@@ -73,6 +74,24 @@ if (!searchTypeDesc.includes("lite") || !highlightProps.highlightsDynamic || !hi
   process.exit(1);
 }
 console.log("exa_search Exa 3.0 schema OK");
+
+const byName = Object.fromEntries(tools.tools.map((t) => [t.name, t]));
+const liteProps = Object.keys(byName.exa_search_lite?.inputSchema?.properties ?? {});
+const snapRequired = byName.exa_fetch_snapshot?.inputSchema?.required ?? [];
+const nearRequired = byName.exa_search_near?.inputSchema?.required ?? [];
+if (liteProps.includes("withSummary") || liteProps.includes("maxAgeHours") || liteProps.includes("searchType")) {
+  console.error("\nexa_search_lite exposes a non-lite parameter");
+  process.exit(1);
+}
+if (!snapRequired.includes("snapshotAsOf") || !nearRequired.includes("userLocation")) {
+  console.error("\nconvenience tools are missing a required field");
+  process.exit(1);
+}
+if (!byName.exa_agent?.inputSchema?.properties?.maxDurationSeconds || !highlightProps.requestTimeout) {
+  console.error("\nexa_agent.maxDurationSeconds or exa_search.requestTimeout is missing");
+  process.exit(1);
+}
+console.log("convenience + budget + requestTimeout schema OK");
 
 // 2. resources
 const res = await client.listResources();

@@ -6,6 +6,7 @@ Awaitable return values provide compatibility, not nonblocking I/O.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -13,8 +14,9 @@ import time
 import urllib.parse
 import warnings
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Union
 
 import httpx
 
@@ -307,6 +309,112 @@ class ExaWarning(UserWarning):
     """
 
 
+class ExaTimeoutError(ExaError):
+    """A request exceeded its timeout. ``phase`` is connect, read, write, pool, or total.
+
+    Mirrors the phases exa-py 2.26 reports. This client uses httpx, so the
+    error subclasses ``ExaError`` rather than the transport exception.
+    """
+
+    def __init__(self, message: str, *, phase: str = "total"):
+        super().__init__(message)
+        self.phase = phase
+
+
+class ExaCancelledError(ExaError):
+    """The caller cancelled the request before it finished."""
+
+
+def _positive_seconds(name: str, value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ExaBadRequestError(f"{name} must be a non-negative number of seconds.")
+    return float(value)
+
+
+class RequestTimeout:
+    """Per-phase HTTP limits in seconds. Unset phases use ``total``.
+
+    Pass an instance (or a dict with the same keys) as ``timeout=``. A bare
+    number sets every phase.
+    """
+
+    def __init__(self, total: float, *, connect: Optional[float] = None,
+                 read: Optional[float] = None, write: Optional[float] = None,
+                 pool: Optional[float] = None):
+        self.total = _positive_seconds("total", total)
+        self.connect = None if connect is None else _positive_seconds("connect", connect)
+        self.read = None if read is None else _positive_seconds("read", read)
+        self.write = None if write is None else _positive_seconds("write", write)
+        self.pool = None if pool is None else _positive_seconds("pool", pool)
+
+    def as_httpx(self) -> "httpx.Timeout":
+        # Passing None would clear that phase. Omit unset phases so they use total.
+        phases = {}
+        if self.connect is not None:
+            phases["connect"] = self.connect
+        if self.read is not None:
+            phases["read"] = self.read
+        if self.write is not None:
+            phases["write"] = self.write
+        if self.pool is not None:
+            phases["pool"] = self.pool
+        return httpx.Timeout(self.total, **phases)
+
+
+class CancelToken:
+    """Cooperative abort for one or more in-flight Exa requests.
+
+    ``cancel()`` unblocks a request made with this token: that call uses a
+    private client the watcher closes. Requests without a token keep using
+    the shared client.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self.reason = "Request cancelled."
+
+    def cancel(self, reason: str = "Request cancelled.") -> None:
+        self.reason = reason or "Request cancelled."
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise ExaCancelledError(self.reason)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._event.wait(timeout)
+
+
+_CANCEL: contextvars.ContextVar[Optional[CancelToken]] = contextvars.ContextVar(
+    "exa_cancel", default=None,
+)
+
+
+class RequestScope:
+    """Bind a ``CancelToken`` for every Exa call in the block.
+
+    An explicit ``cancel=`` on a call wins over the scope.
+    """
+
+    def __init__(self, cancel: Optional[CancelToken] = None):
+        self.cancel = cancel
+        self._token: Optional[contextvars.Token] = None
+
+    def __enter__(self) -> "RequestScope":
+        if self.cancel is not None:
+            self._token = _CANCEL.set(self.cancel)
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        if self._token is not None:
+            _CANCEL.reset(self._token)
+        return False
+
+
 _API_KEY_NAMES = ['EXA_API_KEY']
 _API_LABEL = "exa"
 _API_KEY_CACHE = {}
@@ -401,10 +509,170 @@ def _get_api_key():
     return key
 
 
+def _resolve_cancel(explicit: Optional[CancelToken]) -> Optional[CancelToken]:
+    if explicit is not None:
+        return explicit
+    return _CANCEL.get()
+
+
+def _coerce_timeout(timeout):
+    """A number stays a number. A ``RequestTimeout`` or dict becomes ``httpx.Timeout``."""
+    if isinstance(timeout, RequestTimeout):
+        return timeout.as_httpx()
+    if isinstance(timeout, dict):
+        total = timeout.get("total", timeout.get("read", timeout.get("connect", 45)))
+        return RequestTimeout(
+            total, connect=timeout.get("connect"), read=timeout.get("read"),
+            write=timeout.get("write"), pool=timeout.get("pool"),
+        ).as_httpx()
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ExaBadRequestError(
+            "timeout must be a non-negative number of seconds or a RequestTimeout."
+        )
+    if timeout < 0:
+        raise ExaBadRequestError("timeout must be a non-negative number of seconds.")
+    return float(timeout)
+
+
+def _as_timeout(exc: BaseException) -> ExaTimeoutError:
+    if isinstance(exc, httpx.ConnectTimeout):
+        phase = "connect"
+    elif isinstance(exc, httpx.WriteTimeout):
+        phase = "write"
+    elif isinstance(exc, httpx.PoolTimeout):
+        phase = "pool"
+    elif isinstance(exc, httpx.ReadTimeout):
+        phase = "read"
+    else:
+        phase = "total"
+    return ExaTimeoutError(
+        f"Exa request timed out during {phase}. Increase `timeout` and retry.",
+        phase=phase,
+    )
+
+
+def _one_shot_client(timeout):
+    """Private client so a cancel watcher can close this call without the shared pool."""
+    return httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"Accept": "application/json"},
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
+
+
+def _dispatch_http(method, url, path, *, params, json_body, headers, timeout, cancel):
+    """One HTTP attempt. A cancel token uses a private client a watcher can close."""
+    timeout_arg = _coerce_timeout(timeout)
+    active = _resolve_cancel(cancel)
+    try:
+        if active is None:
+            return _http().request(
+                method, url, params=params, json=json_body,
+                headers=headers, timeout=timeout_arg,
+            )
+        active.raise_if_cancelled()
+        client = _one_shot_client(timeout_arg)
+
+        def _watch():
+            active.wait()
+            try:
+                client.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=_watch, name="exa-cancel", daemon=True).start()
+        try:
+            active.raise_if_cancelled()
+            return client.request(
+                method, url, params=params, json=json_body,
+                headers=headers, timeout=timeout_arg,
+            )
+        finally:
+            client.close()
+    except httpx.TimeoutException as exc:
+        if active is not None and active.cancelled:
+            raise ExaCancelledError(active.reason) from exc
+        raise _as_timeout(exc) from exc
+    except httpx.HTTPError as exc:
+        if active is not None and active.cancelled:
+            raise ExaCancelledError(active.reason) from exc
+        raise ExaError(
+            f"Exa request to {path} failed at the transport level "
+            f"({type(exc).__name__}: {exc}). Check network connectivity."
+        ) from exc
+
+
+@contextmanager
+def _open_stream(method, url, *, json_body, headers, timeout, cancel=None) -> Iterator[Any]:
+    """SSE response. No cancel token keeps ``httpx.stream`` so existing tests patch it."""
+    timeout_arg = _coerce_timeout(timeout)
+    active = _resolve_cancel(cancel)
+    if active is None:
+        try:
+            with httpx.stream(method, url, json=json_body, headers=headers, timeout=timeout_arg) as resp:
+                yield resp
+        except httpx.TimeoutException as exc:
+            raise _as_timeout(exc) from exc
+        return
+    active.raise_if_cancelled()
+    client = _one_shot_client(timeout_arg)
+
+    def _watch():
+        active.wait()
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=_watch, name="exa-cancel", daemon=True).start()
+    try:
+        active.raise_if_cancelled()
+        with client.stream(method, url, json=json_body, headers=headers) as resp:
+            yield resp
+    except httpx.TimeoutException as exc:
+        if active.cancelled:
+            raise ExaCancelledError(active.reason) from exc
+        raise _as_timeout(exc) from exc
+    except httpx.HTTPError as exc:
+        if active.cancelled:
+            raise ExaCancelledError(active.reason) from exc
+        raise
+    finally:
+        client.close()
+
+
+def _agent_budget(effort: str, max_cost_dollars, max_duration_seconds) -> dict:
+    """OpenAPI AgentBudget. Cost is 1–100 on auto/ultra. Duration is 300–10800 on ultra only."""
+    budget: dict[str, Any] = {}
+    if max_cost_dollars is not None:
+        if isinstance(max_cost_dollars, bool) or not isinstance(max_cost_dollars, (int, float)):
+            raise ExaBadRequestError("max_cost_dollars must be a number from 1 to 100.")
+        if not (1 <= float(max_cost_dollars) <= 100):
+            raise ExaBadRequestError("max_cost_dollars must be between 1 and 100.")
+        if effort not in ("auto", "ultra"):
+            raise ExaBadRequestError("max_cost_dollars applies only to effort 'auto' or 'ultra'.")
+        budget["maxCostDollars"] = float(max_cost_dollars)
+    if max_duration_seconds is not None:
+        if isinstance(max_duration_seconds, bool) or not isinstance(max_duration_seconds, int):
+            raise ExaBadRequestError(
+                "max_duration_seconds must be an integer from 300 to 10800 (5 minutes to 3 hours)."
+            )
+        if not (300 <= max_duration_seconds <= 10800):
+            raise ExaBadRequestError(
+                "max_duration_seconds must be an integer from 300 to 10800 (5 minutes to 3 hours)."
+            )
+        if effort != "ultra":
+            raise ExaBadRequestError("max_duration_seconds applies only to effort 'ultra'.")
+        budget["maxDurationSeconds"] = max_duration_seconds
+    return budget
+
+
 def _request(method: str, path: str, api_key: str, *, base: str = DEFAULT_API_URL,
              params=None, json_body=None, timeout=45.0, _retries=2,
              _idempotent: Optional[bool] = None,
-             extra_headers: Optional[dict] = None) -> dict:
+             extra_headers: Optional[dict] = None,
+             cancel: Optional[CancelToken] = None) -> dict:
     """POST/GET to the Exa API, classifying errors for fast, actionable failures.
 
     Transient failures (429 rate-limit, 5xx) are retried up to ``_retries``
@@ -415,32 +683,23 @@ def _request(method: str, path: str, api_key: str, *, base: str = DEFAULT_API_UR
     are never re-sent, to avoid double-charging / duplicates. Non-transient
     errors raise a precise subclass: ``ExaAuthError`` (401), ``ExaPlanError``
     (403), ``ExaBadRequestError`` (400/422), ``ExaRateLimitError`` (429, after
-    retries), ``ExaServerError`` (5xx, after retries). Transport-level failures
-    (connect/read timeouts, pool exhaustion) raise ``ExaError`` rather than
-    leaking a raw httpx exception.
+    retries), ``ExaServerError`` (5xx, after retries). Timeouts raise
+    ``ExaTimeoutError`` (``phase`` is connect, read, write, pool, or total).
+    A ``CancelToken`` raises ``ExaCancelledError``. Other transport failures
+    raise ``ExaError``.
     """
     import time
-    import httpx as _httpx
     url = f"{base}{path}"
     if _idempotent is None:
         _idempotent = (method or "").upper() == "GET"
     last_resp = None
     detail = None
     for attempt in range(_retries + 1):
-        try:
-            resp = _http().request(method, url, params=params, json=json_body,
-                                   headers={"x-api-key": api_key, **(extra_headers or {})},
-                                   timeout=timeout)
-        except _httpx.TimeoutException as e:
-            raise ExaError(
-                f"Exa request to {path} timed out after {timeout}s "
-                f"({type(e).__name__}). Increase `timeout` and retry."
-            ) from e
-        except _httpx.HTTPError as e:
-            raise ExaError(
-                f"Exa request to {path} failed at the transport level "
-                f"({type(e).__name__}: {e}). Check network connectivity."
-            ) from e
+        resp = _dispatch_http(
+            method, url, path, params=params, json_body=json_body,
+            headers={"x-api-key": api_key, **(extra_headers or {})},
+            timeout=timeout, cancel=cancel,
+        )
         if resp.status_code < 400:
             try:
                 return resp.json()
@@ -1642,6 +1901,7 @@ def search(
     context: Optional[str] = None,
     stream: bool = False,
     timeout: float = 60.0,
+    cancel: Optional[CancelToken] = None,
 ) -> SearchResults:
     """Advanced Exa search returning a structured ``SearchResults``.
 
@@ -1764,6 +2024,7 @@ def search(
     data = _request(
         "POST", "/search", key, json_body=body, timeout=timeout,
         extra_headers=_dynamic_highlights_headers(contents),
+        cancel=cancel,
     )
     return _search_results_from(query, data)
 
@@ -1847,6 +2108,7 @@ def run(
     compliance: Optional[str] = None,
     context: Optional[str] = None,
     timeout: float = 30.0,
+    cancel: Optional[CancelToken] = None,
 ) -> str:
     """Advanced Exa web search returning a human-readable numbered list.
 
@@ -1889,7 +2151,7 @@ def run(
         additional_queries=additional_queries, objective=objective,
         user_location=user_location, user_identifier=user_identifier,
         moderation=moderation, compliance=compliance, context=context,
-        timeout=timeout,
+        timeout=timeout, cancel=cancel,
     )
     lines = _fmt(res.results)
     if res.answer:
@@ -1935,6 +2197,7 @@ def fetch(
     user_identifier: Optional[str] = None,
     include_meta: bool = False,
     timeout: float = 45.0,
+    cancel: Optional[CancelToken] = None,
 ) -> Union[List[dict], str, dict]:
     """Fetch the contents of one or more URLs or document IDs.
 
@@ -2013,6 +2276,7 @@ def fetch(
     data = _request(
         "POST", "/contents", key, json_body=body, timeout=timeout,
         extra_headers=_dynamic_highlights_headers(contents),
+        cancel=cancel,
     )
     status_list = data.get("statuses", [])
     status_map = {s.get("id"): s for s in status_list}
@@ -2151,6 +2415,7 @@ def answer(
     user_location: Optional[Union[str, dict]] = None,
     user_identifier: Optional[str] = None,
     timeout: float = 90.0,
+    cancel: Optional[CancelToken] = None,
 ) -> Answer:
     """Get a concise, citation-grounded answer to a natural-language question.
 
@@ -2200,7 +2465,7 @@ def answer(
     if identifier:
         body["userIdentifier"] = identifier
     body["stream"] = bool(stream)
-    data = _request("POST", "/answer", key, json_body=body, timeout=timeout)
+    data = _request("POST", "/answer", key, json_body=body, timeout=timeout, cancel=cancel)
     return Answer(data)
 
 
@@ -2601,9 +2866,12 @@ def agent(
     exclusion: Optional[List[dict]] = None,
     data_sources: Optional[List[str]] = None,
     user_identifier: Optional[str] = None,
+    max_cost_dollars: Optional[float] = None,
+    max_duration_seconds: Optional[int] = None,
     timeout: float = 120.0,
     poll_interval: float = 2.0,
     raise_on_failed: bool = True,
+    cancel: Optional[CancelToken] = None,
 ) -> AgentRun:
     """Run a full Exa **agentic** workflow and return the completed, cited answer.
 
@@ -2625,6 +2893,8 @@ def agent(
         effort: Cost/reasoning effort: minimal|low|medium|high|xhigh|ultra|auto (default).
             ``ultra`` is the highest OpenAPI tier. ``max`` is still accepted for
             the graceful-stop beta.
+        max_cost_dollars: Spend cap in USD, 1–100. Applies only to ``auto`` and ``ultra``.
+        max_duration_seconds: Soft wall-clock cap, integer 300–10800. Applies only to ``ultra``.
         previous_run_id: Completed run ID to continue from (same team).
         metadata: Arbitrary string KV to store with the run (your own tracking).
         data: JSON records for the agent to process/enrich as part of the run.
@@ -2662,6 +2932,9 @@ def agent(
     identifier = _normalize_user_identifier(user_identifier)
     if identifier:
         body["userIdentifier"] = identifier
+    budget = _agent_budget(effort, max_cost_dollars, max_duration_seconds)
+    if budget:
+        body["budget"] = budget
     inp: dict[str, Any] = {}
     if data is not None:
         inp["data"] = list(data)
@@ -2674,7 +2947,8 @@ def agent(
     # a slow create cannot push the whole run past `timeout`.
     deadline = time.time() + timeout
     created = _request("POST", "/agent/runs", key, json_body=body,
-                       timeout=max(1.0, min(timeout, 30, deadline - time.time())))
+                       timeout=max(1.0, min(timeout, 30, deadline - time.time())),
+                       cancel=cancel)
     run = AgentRun(created)
     if run.done:  # rare: already terminal on create
         if raise_on_failed and run.status == "failed":
@@ -2684,7 +2958,10 @@ def agent(
 
     run_id = run.id
     def _tick():
-        data = _request("GET", f"/agent/runs/{run_id}", key, timeout=min(timeout, 45))
+        active = _resolve_cancel(cancel)
+        if active is not None:
+            active.raise_if_cancelled()
+        data = _request("GET", f"/agent/runs/{run_id}", key, timeout=min(timeout, 45), cancel=cancel)
         nxt = AgentRun(data)
         return nxt if nxt.done else None
     done = _poll_until(_tick, deadline=deadline,
@@ -2810,6 +3087,7 @@ def find_similar(
     include_sections=None, exclude_sections=None, include_html_tags: bool = False,
     livecrawl: Optional[str] = None, livecrawl_timeout: Optional[int] = None,
     timeout: float = 45.0,
+    cancel: Optional[CancelToken] = None,
 ) -> SearchResults:
     """Find web pages similar to a given URL (or document id).
 
@@ -2880,6 +3158,7 @@ def find_similar(
     data = _request(
         "POST", "/findSimilar", key, json_body=body, timeout=timeout,
         extra_headers=_dynamic_highlights_headers(contents),
+        cancel=cancel,
     )
     return _search_results_from(f"similar-to:{url}", data)
 
@@ -2900,13 +3179,40 @@ def similar_to(url, **kwargs) -> SearchResults:
     return find_similar(url, **kwargs)
 
 
+def search_lite(query: str, **kwargs) -> SearchResults:
+    """Cached ``type=lite`` search. Options outside the lite allowlist raise ``ExaBadRequestError``."""
+    if kwargs.get("search_type") not in (None, "lite"):
+        raise ExaBadRequestError("search_lite uses search_type 'lite'. Use search() for other types.")
+    kwargs["search_type"] = "lite"
+    return search(query, **kwargs)
+
+
+def fetch_snapshot(urls=None, *, ids=None, snapshot_as_of: str, **kwargs):
+    """Fetch the stored page as of ``snapshot_as_of`` (YYYY-MM-DD or ISO date-time). Never live-fetches."""
+    if not snapshot_as_of:
+        raise ExaBadRequestError(
+            "fetch_snapshot requires snapshot_as_of (YYYY-MM-DD or an ISO date-time)."
+        )
+    return fetch(urls=urls, ids=ids, snapshot_as_of=snapshot_as_of, **kwargs)
+
+
+def search_near(query: str, user_location, **kwargs) -> SearchResults:
+    """Search biased to ``user_location`` (2-letter country code, or latitude and longitude)."""
+    if user_location is None or user_location == "":
+        raise ExaBadRequestError(
+            "search_near requires user_location (a country code or latitude/longitude)."
+        )
+    return search(query, user_location=user_location, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # stream_answer() / stream_search() — OpenAI-style SSE streaming
 # ---------------------------------------------------------------------------
 def stream_answer(query, *, output_schema=None, text=False,
                   citation_format=None, system_prompt=None,
                   user_location=None, user_identifier=None,
-                  timeout=90.0, collect_meta=True):
+                  timeout=90.0, collect_meta=True,
+                  cancel: Optional[CancelToken] = None):
     """SSE-stream a citation-grounded answer incrementally (yields text deltas).
 
     Posts to ``/answer`` with ``stream=true`` and yields each incremental content
@@ -2949,8 +3255,8 @@ def stream_answer(query, *, output_schema=None, text=False,
     citations_out: List[dict] = []
     cost_dollars: Optional[dict] = None
     request_id_meta = ""
-    with httpx.stream("POST", f"{DEFAULT_API_URL}/answer", json=body,
-                      headers={"x-api-key": key}, timeout=timeout) as resp:
+    with _open_stream("POST", f"{DEFAULT_API_URL}/answer", json_body=body,
+                      headers={"x-api-key": key}, timeout=timeout, cancel=cancel) as resp:
         if resp.status_code >= 400:
             try:
                 detail = resp.json()
@@ -3055,7 +3361,7 @@ def stream_answer_source(query, *, output_schema=None, citation_format=None,
                        "cumulative_chars": cumulative_chars,
                        "tokens_estimate": max(1, cumulative_chars // 4)}
 
-    with httpx.stream("POST", f"{DEFAULT_API_URL}/answer", json=body,
+    with _open_stream("POST", f"{DEFAULT_API_URL}/answer", json_body=body,
                       headers={"x-api-key": key}, timeout=timeout) as resp:
         if resp.status_code >= 400:
             try:
@@ -3171,7 +3477,7 @@ def stream_search(query, *, num_results=5, mode="auto", search_type=None,
     stream_headers = {"x-api-key": key, **(_dynamic_highlights_headers(body.get("contents")) or {})}
     noticed: List[dict] = []
     warned: List[dict] = []
-    with httpx.stream("POST", f"{DEFAULT_API_URL}/search", json=body,
+    with _open_stream("POST", f"{DEFAULT_API_URL}/search", json_body=body,
                       headers=stream_headers, timeout=timeout) as resp:
         if resp.status_code >= 400:
             try:
@@ -6301,10 +6607,12 @@ def is_deprecated(pkg, *, days=180, timeout=90.0):
 __all__ = [
     "ExaError", "ExaAuthError", "ExaRateLimitError", "ExaBadRequestError",
     "ExaPlanError", "ExaNotFoundError", "ExaServerError", "ExaWarning",
+    "ExaTimeoutError", "ExaCancelledError", "RequestTimeout", "CancelToken", "RequestScope",
     "Result", "SearchResults", "Answer", "AgentRun",
     "entity_summary", "entity_type", "entities",
     "entity_search", "entity_schema", "top_terms",
     "search", "run", "brief", "fetch", "answer", "agent", "agent_structured",
+    "search_lite", "fetch_snapshot", "search_near",
     "find_similar", "similar_to", "agent_chat", "search_to_csv",
     "search_to_jsonl", "deep_research", "merge_searches", "modes",
     "news_roundup", "company_dossier", "diff_results",
